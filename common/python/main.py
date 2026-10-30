@@ -282,6 +282,102 @@ def is_web_research_question(question: str) -> bool:
     return any(ind in norm for ind in research_indicators)
 
 
+def understand_user_query(question: str) -> dict | None:
+    """
+    Intelligent semantic comprehension layer that parses user intent and parameters
+    from natural, colloquial, or compound phrasing before regex or preflight LLM calls.
+    """
+    q = question.strip()
+    if not q:
+        return None
+
+    # Strip conversational lead-ins
+    conv_prefix = re.match(
+        r"^(?:(?:can\s+you\s+|could\s+you\s+|will\s+you\s+)?(?:please\s+)?(?:i\s+want\s+you\s+to\s+|help\s+me\s+(?:to\s+)?|go\s+ahead\s+and\s+)?(?:take\s+over\s+(?:the|my)\s+screen\s+and\s+|take\s+over\s+and\s+|control\s+(?:the|my)\s+screen\s+and\s+|use\s+agent\s+mode\s+to\s+|start\s+agent\s+mode\s+and\s+)?)(.*)$",
+        q,
+        re.IGNORECASE,
+    )
+    unwrapped = conv_prefix.group(1).strip() if conv_prefix and conv_prefix.group(1) else q
+
+    # 1. Colloquial media commands: "put on <song> on spotify", "listen to <song> on youtube", "play some jazz on spotify", "stream <song> on spotify"
+    media_colloquial = re.match(
+        r"^(?:put\s+on(?:\s+some)?|listen\s+to(?:\s+some)?|stream(?:\s+some)?|play(?:\s+some)?)\s+(?P<song>.+?)(?:\s+(?:on|in|using)\s+(?P<platform>spotify|youtube))\s*$",
+        unwrapped,
+        re.IGNORECASE,
+    )
+    if media_colloquial:
+        song = media_colloquial.group("song").strip()
+        platform = media_colloquial.group("platform").lower().strip()
+        return {
+            "intent": "MEDIA_PLAYBACK",
+            "needs_screen": False,
+            "is_continuation": False,
+            "extracted_params": {
+                "media_action": "play",
+                "song_name": song,
+                "platform": platform,
+            },
+            "normalized_query": f"play {song} on {platform}",
+        }
+
+    # "open <platform> and play <song>"
+    open_and_play = re.match(
+        r"^(?:open|launch|start)\s+(?P<platform>spotify|youtube)\s+(?:and|to|then)\s+(?:play|put\s+on|listen\s+to)\s+(?P<song>.+)$",
+        unwrapped,
+        re.IGNORECASE,
+    )
+    if open_and_play:
+        song = open_and_play.group("song").strip()
+        platform = open_and_play.group("platform").lower().strip()
+        return {
+            "intent": "MEDIA_PLAYBACK",
+            "needs_screen": False,
+            "is_continuation": False,
+            "extracted_params": {
+                "media_action": "play",
+                "song_name": song,
+                "platform": platform,
+            },
+            "normalized_query": f"play {song} on {platform}",
+        }
+
+    # 2. Search queries: "search (for) <query> on google/web/the web"
+    search_match = re.match(
+        r"^search(?:\s+for)?\s+(?P<query>.+?)(?:\s+on\s+(?:google|web|the\s+web|internet))?\s*$",
+        unwrapped,
+        re.IGNORECASE,
+    )
+    if search_match and not unwrapped.lower().startswith("search box"):
+        query = search_match.group("query").strip()
+        return {
+            "intent": "WEB_SEARCH",
+            "needs_screen": False,
+            "is_continuation": False,
+            "extracted_params": {"query": query},
+            "normalized_query": query,
+        }
+
+    # 3. Compound "open <app> and <action>"
+    compound_app = re.match(
+        r"^(?:open|launch|start)\s+(?P<app>[a-zA-Z0-9_\-\s]+?)\s+(?:and|to|then)\s+(?P<action>.+)$",
+        unwrapped,
+        re.IGNORECASE,
+    )
+    if compound_app:
+        app = compound_app.group("app").strip()
+        action = compound_app.group("action").strip()
+        if app.lower() not in {"spotify", "youtube"}:
+            return {
+                "intent": "COMPUTER_USE",
+                "needs_screen": False,
+                "is_continuation": False,
+                "extracted_params": {"app_name": app, "sub_action": action},
+                "normalized_query": unwrapped,
+            }
+
+    return None
+
+
 def run(
     question: str,
     previous_question: str | None = None,
@@ -313,6 +409,10 @@ def run(
         r"^(?:can\s+you\s+)?(?:please\s+)?(?:i\s+want\s+you\s+to\s+)?(?:help\s+me\s+to\s+)?(?:go\s+ahead\s+and\s+)?",
     ]:
         question = re.sub(pat, "", question, flags=re.IGNORECASE).strip()
+
+    sem_understood = understand_user_query(question)
+    if sem_understood and sem_understood.get("normalized_query"):
+        question = sem_understood["normalized_query"]
 
     # Fast-path: attached mobile image explain (Gemini/Groq vision).
     # Must run before any screen capture so a phone photo is described
@@ -1141,6 +1241,14 @@ def classify_request(
     conversation_history: list[dict] | None = None,
     agent_mode: bool = False,
 ) -> dict | None:
+    sem = understand_user_query(question)
+    if sem and sem.get("intent") in {"MEDIA_PLAYBACK", "WEB_SEARCH", "COMPUTER_USE"}:
+        return {
+            "intent": sem["intent"],
+            "needs_screen": sem.get("needs_screen", False),
+            "is_continuation": sem.get("is_continuation", False),
+            "extracted_params": sem.get("extracted_params", {}),
+        }
     from computer_use.agent import is_web_destination, is_in_app_action, looks_like_app_name
     from computer_use.tools import normalize_app_name, APP_PROTOCOLS, APP_NAME_ALIASES
     is_mocked = getattr(ask_text_model, "_mock_name", None) is not None or "Mock" in type(ask_text_model).__name__
@@ -1328,6 +1436,33 @@ def classify_request(
 
     intent = payload.get("intent")
     extracted_params = payload.get("extracted_params", {}) or {}
+
+    # Semantic normalization step: if intent is ambiguous or the LLM extracted unstructured text
+    if intent == "MEDIA_PLAYBACK":
+        if "song" in extracted_params and "song_name" not in extracted_params:
+            extracted_params["song_name"] = extracted_params["song"]
+        if "artist" in extracted_params and "song_name" not in extracted_params:
+            extracted_params["song_name"] = extracted_params["artist"]
+        if "track" in extracted_params and "song_name" not in extracted_params:
+            extracted_params["song_name"] = extracted_params["track"]
+        if "query" in extracted_params and "song_name" not in extracted_params:
+            extracted_params["song_name"] = extracted_params["query"]
+        if "platform" not in extracted_params:
+            q_low = question.lower()
+            if "youtube" in q_low:
+                extracted_params["platform"] = "youtube"
+            elif "spotify" in q_low:
+                extracted_params["platform"] = "spotify"
+    elif intent == "OPEN_APP":
+        if "app" in extracted_params and "app_name" not in extracted_params:
+            extracted_params["app_name"] = extracted_params["app"]
+        if "application" in extracted_params and "app_name" not in extracted_params:
+            extracted_params["app_name"] = extracted_params["application"]
+    elif intent == "WEB_SEARCH":
+        if "search_query" in extracted_params and "query" not in extracted_params:
+            extracted_params["query"] = extracted_params["search_query"]
+        if "q" in extracted_params and "query" not in extracted_params:
+            extracted_params["query"] = extracted_params["q"]
     
     # Safety check: if intent is OPEN_APP but targets web UI, an in-app
     # feature/action, or a query, override to DESKTOP_AUTOMATION (only if not in agent_mode).

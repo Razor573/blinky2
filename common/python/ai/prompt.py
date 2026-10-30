@@ -31,7 +31,7 @@ Intents to choose from:
 1. `COMPUTER_USE`: The student wants to control their Windows or Linux desktop â€” open/list windows, click buttons, type text, press keys, or perform sequential actions on running applications (e.g. "type hello world", "list windows", "click the search box", "press Enter").
 2. `OPEN_APP`: The user explicitly requests to open, launch, or start a local desktop application (e.g. "open Spotify", "launch vscode", "start WhatsApp"). Extract the app name to "app_name".
    - Note: Do NOT classify web destinations, sites, or domains (e.g. YouTube, GitHub, Gmail, ChatGPT, or URLs) as `OPEN_APP`. Route those to `DESKTOP_AUTOMATION`.
-3. `MEDIA_PLAYBACK`: The user requests to play a song/artist/playlist, pause/stop/resume playback, seek (fast-forward or rewind), or skip to the next/previous track on Spotify or YouTube (e.g. "play blinding lights", "pause the music", "skip 1 minute in song", "go back 10 seconds", "next song", "prev track"). Extract the following parameters if applicable:
+3. `MEDIA_PLAYBACK`: The user requests to play a song/artist/playlist, pause/stop/resume playback, seek (fast-forward or rewind), or skip to the next/previous track on Spotify or YouTube (e.g. "play blinding lights", "open spotify and play a dua lipa song", "open spotify and play <song>", "open youtube and play <video>", "pause the music", "skip 1 minute in song", "go back 10 seconds", "next song", "prev track"). Extract the following parameters if applicable:
     - "media_action": one of "play", "pause", "resume", "stop", "seek", "next", "prev"
     - "song_name": song/artist or video/channel query (only for "play" action)
     - "platform": "spotify" or "youtube" (only for "play" action)
@@ -65,6 +65,7 @@ Compound-request rule (IMPORTANT):
  (e.g. "open vivaldi and search youtube.com", "open firefox and type hello",
  "launch vscode then open a file"), classify as `COMPUTER_USE` — NOT OPEN_APP,
  NOT DESKTOP_AUTOMATION. It is a multi-step automation task for the agent loop.
+- EXCEPTION: Requests to open and play music or video (e.g. "open spotify and play a dua lipa song", "open spotify and play <song>", "open youtube and play <video>") MUST ALWAYS be classified as `MEDIA_PLAYBACK`.
 
 Rules for needs_screen:
 - needs_screen is true ONLY when the student wants guidance tied to visible UI (like clicking, opening, selecting, locating, highlighting, installing, or navigating something in an app, menu, button, tab, or window), OR when the student asks what is on their screen ("what's on my screen", "whats on my screen", "describe my screen", "explain my screen", "what am I looking at").

@@ -246,6 +246,46 @@ def try_run_agent_action(question: str, observation: dict[str, Any] | None = Non
     if wants_help_menu(question_cleaned, observation):
         return _get_tool("shortcut_tool")("alt+h")
 
+    colloquial_spotify = re.match(
+        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:put\s+on(?:\s+some)?|listen\s+to(?:\s+some)?|stream(?:\s+some)?|play(?:\s+some)?)\s+(?P<song>.+?)\s+(?:on|in|using)\s+spotify)\s*$",
+        question_cleaned,
+        re.IGNORECASE,
+    )
+    if colloquial_spotify:
+        song = colloquial_spotify.group("song")
+        if song:
+            return _get_tool("play_spotify_track_tool")(song.strip())
+
+    open_and_play_spotify = re.match(
+        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:open|launch|start)\s+spotify\s+(?:and|to|then)\s+play\s+(?P<song>.+)|play\s+(?P<song2>.+?)\s+(?:in|on)\s+spotify)\s*$",
+        question_cleaned,
+        re.IGNORECASE,
+    )
+    if open_and_play_spotify:
+        song = open_and_play_spotify.group("song") or open_and_play_spotify.group("song2")
+        if song:
+            return _get_tool("play_spotify_track_tool")(song.strip())
+
+    colloquial_yt = re.match(
+        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:put\s+on(?:\s+some)?|listen\s+to(?:\s+some)?|stream(?:\s+some)?|play(?:\s+some)?)\s+(?P<query>.+?)\s+(?:on|in|using)\s+youtube)\s*$",
+        question_cleaned,
+        re.IGNORECASE,
+    )
+    if colloquial_yt:
+        query = colloquial_yt.group("query")
+        if query:
+            return _get_tool("play_youtube_video_tool")(query.strip())
+
+    open_and_play_yt = re.match(
+        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:open|launch|start)\s+youtube\s+(?:and|to|then)\s+(?:play|put\s+on|listen\s+to)\s+(?P<query>.+)|play\s+(?P<query2>.+?)\s+(?:in|on)\s+youtube)\s*$",
+        question_cleaned,
+        re.IGNORECASE,
+    )
+    if open_and_play_yt:
+        query = open_and_play_yt.group("query") or open_and_play_yt.group("query2")
+        if query:
+            return _get_tool("play_youtube_video_tool")(query.strip())
+
     play_match = PLAY_SPOTIFY_RE.match(question_cleaned)
     if play_match:
         song = play_match.group("song1") or play_match.group("song2")

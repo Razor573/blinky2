@@ -733,6 +733,17 @@ def play_spotify_track_tool(song_name: str) -> ToolResult:
 
 
         if not track_uri:
+            import urllib.parse
+            cleaned_query = song_name.strip()
+            search_uri = f"spotify:search:{urllib.parse.quote(cleaned_query)}"
+            launch_result = open_spotify_uri(search_uri, song_name=song_name)
+            if launch_result.success:
+                return ToolResult(
+                    True,
+                    "play_spotify",
+                    f"Playing '{song_name}' in Spotify.",
+                    {"song_name": song_name, "track_uri": search_uri, **launch_result.details},
+                )
             return ToolResult(
                 False,
                 "play_spotify",
@@ -1104,108 +1115,22 @@ def clean_song_query(query: str) -> str:
 
 
 async def resolve_spotify_track_uri(song_name: str) -> str | None:
-    import asyncio
-    import urllib.parse
-
-    from wil.http_fetcher import fetch_html
-    from wil.searxng_client import SearXNGClient
-
-    cleaned_query = clean_song_query(song_name)
-    LOGGER.info(f"Resolving Spotify URI for '{song_name}' (cleaned: '{cleaned_query}')")
-
-    queries = [
-        f"site:open.spotify.com/track {cleaned_query}",
-        f"{cleaned_query} spotify track",
-    ]
-
-    def _extract_track_id(results: list) -> str | None:
-        for r in results:
-            url = r.get("url", "")
-            if "open.spotify.com/track/" in url:
-                m = re.search(r"track/([a-zA-Z0-9]+)", url)
-                if m:
-                    return f"spotify:track:{m.group(1)}"
-        return None
-
-    # Run both SearXNG queries in parallel for speed
-    try:
-        client = SearXNGClient()
-        all_results = await asyncio.gather(
-            client.search_category(queries[0], category="general", limit=5),
-            client.search_category(queries[1], category="general", limit=5),
-            return_exceptions=True,
-        )
-        for batch in all_results:
-            if isinstance(batch, Exception):
-                continue
-            track_id = _extract_track_id(batch)
-            if track_id:
-                return track_id
-    except Exception as e:
-        LOGGER.warning(f"SearXNG Spotify search failed: {e}")
-
-    # DDG fallback — still sequential but only reached if SearXNG fails entirely
-    for q in queries:
-        try:
-            query_encoded = urllib.parse.quote(q)
-            url = f"https://html.duckduckgo.com/html/?q={query_encoded}"
-            html = await fetch_html(url)
-
-            if html:
-                unquoted_html = urllib.parse.unquote(html)
-                matches = re.findall(
-                    r"open\.spotify\.com/track/([a-zA-Z0-9]+)", unquoted_html
-                )
-                if matches:
-                    return f"spotify:track:{matches[0]}"
-        except Exception as e:
-            LOGGER.warning(f"DuckDuckGo fallback search for '{q}' failed: {e}")
-
+    # SearXNG disabled. Fast return None to trigger instant native spotify:search: URI.
     return None
 
 
 def play_youtube_video_tool(video_query: str) -> ToolResult:
-    import asyncio
     import urllib.parse
+    import webbrowser
 
     try:
-        import threading
-        from concurrent.futures import Future
-
-        future: Future[str | None] = Future()
-
-        def run_in_thread():
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(resolve_youtube_video_url(video_query))
-                future.set_result(result)
-            except Exception as ex:
-                future.set_exception(ex)
-            finally:
-                loop.close()
-
-        thread = threading.Thread(target=run_in_thread)
-        thread.start()
-        video_url = future.result()
-
-        if not video_url:
-            # Fallback to general search query on YouTube in browser
-            fallback_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(video_query)}"
-            webbrowser.open(fallback_url)
-            return ToolResult(
-                True,
-                "play_youtube",
-                f"Could not find specific video for '{video_query}' on YouTube. Opening YouTube search results instead.",
-                {"video_query": video_query, "fallback_url": fallback_url},
-            )
-
-        webbrowser.open(video_url)
+        url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(video_query.strip())}"
+        webbrowser.open(url)
         return ToolResult(
             True,
             "play_youtube",
             f"Playing '{video_query}' on YouTube.",
-            {"video_query": video_query, "video_url": video_url},
+            {"video_query": video_query, "video_url": url},
         )
     except Exception as e:
         LOGGER.exception("Error in play_youtube_video_tool")

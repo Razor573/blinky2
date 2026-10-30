@@ -64,13 +64,8 @@ async def search_searxng_for_app(query: str) -> str:
 
 
 def generate_context_file(process_name: str, app_title: str, filepath: Path) -> bool:
-    # 1. Search for guides on SearXNG
-    search_query = f"{app_title or process_name} Windows app keyboard shortcuts menus navigation help support"
+    # SearXNG disabled - rely directly on LLM knowledge
     search_results = ""
-    try:
-        search_results = run_async(search_searxng_for_app(search_query))
-    except Exception as e:
-        LOGGER.warning(f"Failed running SearXNG search: {e}")
 
     prompt = f"""You are Blinky, an expert Windows desktop assistant tutor.
 We need to generate a markdown context navigation guide for a new application.

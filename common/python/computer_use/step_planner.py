@@ -223,14 +223,8 @@ def generate_procedural_plan(
     if builtin:
         return builtin
 
-    # 2. Query SearXNG for web documentation and step-by-step tutorials
+    # 2. SearXNG disabled - rely directly on LLM procedural knowledge
     search_context = ""
-    try:
-        search_context = _run_async_in_thread(
-            search_searxng_for_procedure(query, app_title=app_title or app_process, os_type=os_type)
-        )
-    except Exception as exc:
-        LOGGER.warning("SearXNG async search failed: %s", exc)
 
     # 3. Prompt Groq Text Model to build a clean procedural plan
     prompt = f"""You are Blinky, an expert desktop automation planner running on {os_type}.

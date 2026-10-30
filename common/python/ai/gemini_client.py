@@ -199,9 +199,13 @@ def ask_gemini_text(
         if client is None:
             raise RuntimeError("Gemini client not available. Set GEMINI_API_KEY in .env.")
 
+        is_json_request = not web_search and any(k in prompt for k in ["JSON", "valid JSON", "json"])
+        response_mime = "application/json" if is_json_request else None
+
         config = types.GenerateContentConfig(
             max_output_tokens=max_tokens,
             tools=[types.Tool(google_search=types.GoogleSearch())] if web_search else None,
+            response_mime_type=response_mime,
         )
 
         for model_name in _get_candidate_models():

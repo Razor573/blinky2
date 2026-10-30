@@ -593,7 +593,32 @@ def _parse_json(text: str) -> dict[str, Any]:
             "arguments": {},
         }
 
-    return json.loads(cleaned)
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+
+    cleaned_lower = cleaned.lower()
+    intent = "INFORMATIONAL_CHAT"
+    extracted = {}
+    if "spotify" in cleaned_lower:
+        intent = "MEDIA_PLAYBACK"
+        extracted = {"platform": "spotify", "media_action": "play"}
+        m = re.search(r"play\s+(?:a\s+)?([^.]+?)(?:\s+song|\s+on|\s+in|\.|$)", cleaned, re.IGNORECASE)
+        if m:
+            extracted["song_name"] = m.group(1).strip()
+    elif any(w in cleaned_lower for w in ["open", "launch", "start", "click", "desktop"]):
+        intent = "DESKTOP_AUTOMATION"
+
+    return {
+        "intent": intent,
+        "needs_screen": False,
+        "is_continuation": False,
+        "extracted_params": extracted,
+        "summary": cleaned,
+        "text": cleaned,
+        "steps": [],
+    }
 
 
 def _validate_response(payload: dict[str, Any]) -> dict[str, Any]:
