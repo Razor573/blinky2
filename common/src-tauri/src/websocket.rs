@@ -52,6 +52,8 @@ impl AgentDaemon {
         let python = python_executable(&root);
 
         let mut cmd = TokioCommand::new(python);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000);
         cmd.arg("-u")
             .arg(&script_path)
             .current_dir(&root)
@@ -1183,7 +1185,10 @@ where
                 };
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let out = TokioCommand::new(python)
+                    let mut cmd = TokioCommand::new(python);
+                    #[cfg(target_os = "windows")]
+                    cmd.creation_flags(0x08000000);
+                    let out = cmd
                         .arg("-u")
                         .arg(&script)
                         .arg(action_arg)
@@ -1350,7 +1355,10 @@ where
                             tauri::async_runtime::spawn(async move {
                                 let python = python_executable(&root);
                                 let script = root.join("common").join("python").join("antigravity_actuator.py");
-                                let _ = TokioCommand::new(python)
+                                let mut cmd = TokioCommand::new(python);
+                                #[cfg(target_os = "windows")]
+                                cmd.creation_flags(0x08000000);
+                                let _ = cmd
                                     .arg("-u")
                                     .arg(&script)
                                     .arg("--prompt")

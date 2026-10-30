@@ -389,6 +389,8 @@ async fn resolve_ai_destination(
     let python = crate::websocket::python_executable(&root);
     let script = root.join("common").join("python").join("file_destination_ai.py");
     let mut command = Command::new(python);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000);
     command.kill_on_drop(true);
     command.arg(script).current_dir(&root)
         .stdin(std::process::Stdio::piped())
@@ -703,6 +705,8 @@ async fn run_aicut_job(
         .join("python")
         .join("file_transfer_aicut.py");
     let mut command = tokio::process::Command::new(python);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000);
     command
         .arg("-u")
         .arg(script)

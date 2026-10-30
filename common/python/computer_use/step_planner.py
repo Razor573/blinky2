@@ -157,23 +157,8 @@ def _run_async_in_thread(coro: Any) -> Any:
 
 
 async def search_searxng_for_procedure(query: str, app_title: str = "", os_type: str = "Windows") -> str:
-    """Query SearXNG for procedural step-by-step guides."""
-    from wil.searxng_client import SearXNGClient
-
-    search_query = f"{app_title or os_type} how to {query} step by step tutorial"
-    try:
-        client = SearXNGClient()
-        results = await client.search_category(search_query, category="general", limit=4)
-        snippets: list[str] = []
-        for r in results:
-            title = r.get("title", "")
-            content = r.get("content", "")
-            if content:
-                snippets.append(f"Title: {title}\nInstructions: {content}")
-        return "\n\n".join(snippets)
-    except Exception as exc:
-        LOGGER.warning("SearXNG procedural search failed for '%s': %s", search_query, exc)
-        return ""
+    """Procedural search helper (SearXNG removed in favor of direct LLM procedural knowledge)."""
+    return ""
 
 
 def check_builtin_template(

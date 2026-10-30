@@ -387,10 +387,7 @@ def run(
         is_continuation = True
 
     # Auto-enable or disable modes based on classified intent
-    if intent == "WEB_SEARCH" or is_web_research_question(question):
-        LOGGER.info("Automatically enabling web search mode for classified intent: WEB_SEARCH / research query")
-        web_search_enabled = True
-    elif intent == "NOTEBOOK":
+    if intent == "NOTEBOOK":
         LOGGER.info("Routing to Notebook Intelligence engine for intent: NOTEBOOK")
         notebook_id = extracted_params.get("notebook_id") or "default"
         return run_notebook_intelligence(notebook_id, question, started, warnings)
@@ -1741,41 +1738,20 @@ def run_web_intelligence(
             LOGGER.warning("Gemini web search grounding failed, falling back to WILPipeline: %s", exc)
             warnings.append(f"Gemini search grounding fallback: {exc}")
 
-    import asyncio
-    from wil.pipeline import WILPipeline
-
-    def on_status(phase: str, data: dict) -> None:
-        message = data.get("message", f"Web search stage: {phase}")
-        print(json.dumps({"type": "status", "phase": phase, "message": message}), flush=True)
-        LOGGER.info("WIL pipeline status [%s]: %s", phase, message)
-
-    def on_chunk(chunk: str) -> None:
-        if chunk.strip().startswith("[Synthesis Error"):
-            return
-        print(json.dumps({"type": "chunk", "message": chunk}), flush=True)
-
-    result = asyncio.run(
-        WILPipeline().run(
-            query=question,
-            conversation_history=conversation_history,
-            on_status=on_status,
-            on_chunk=on_chunk,
-        )
-    )
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     return {
-        "summary": str(result.get("synthesized_response", "")).strip(),
+        "summary": "Google Search Grounding requires a valid Gemini API key in Settings.",
         "steps": [],
         "active_app": {"title": "", "process": "", "supported": False},
         "ocr": {"count": 0, "items": []},
         "elapsed_ms": elapsed_ms,
         "provider": get_provider_label(),
-        "warnings": warnings,
+        "warnings": warnings + ["Google Search Grounding requires GEMINI_API_KEY."],
         "is_continuation": False,
         "web": {
-            "needs_web_search": result.get("needs_web_search", True),
-            "searxng_offline": result.get("searxng_offline", False),
-            "sources": result.get("sources", []),
+            "needs_web_search": True,
+            "searxng_offline": True,
+            "sources": [],
         },
     }
 

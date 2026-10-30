@@ -337,8 +337,10 @@ pub fn open_file_on_pc(raw_path: &str) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
-            .args(&["/C", "start", "", path])
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.creation_flags(0x08000000);
+        cmd.args(&["/C", "start", "", path])
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("Failed to open file: {}", e))

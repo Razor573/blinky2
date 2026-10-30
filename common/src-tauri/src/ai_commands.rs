@@ -344,6 +344,80 @@ pub fn sign_out_oauth(provider: String) -> Result<(), String> {
     Ok(())
 }
 
+fn create_service_account_jwt(creds: &blinky_agent::providers::vertex::ServiceAccountCreds) -> Result<String, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+
+    let header = serde_json::json!({
+        "alg": "RS256",
+        "typ": "JWT"
+    });
+
+    let claims = serde_json::json!({
+        "iss": creds.client_email,
+        "scope": "https://www.googleapis.com/auth/cloud-platform",
+        "aud": "https://oauth2.googleapis.com/token",
+        "exp": now + 3600,
+        "iat": now
+    });
+
+    let b64_header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
+    let b64_claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
+    let message = format!("{}.{}", b64_header, b64_claims);
+
+    let mut cursor = std::io::Cursor::new(creds.private_key.as_bytes());
+    let key_der = rustls_pemfile::private_key(&mut cursor)
+        .map_err(|e| format!("Failed to parse private key: {}", e))?
+        .ok_or_else(|| "No private key found in PEM".to_string())?;
+
+    let pkcs8_bytes = key_der.secret_der();
+    let key_pair = ring::signature::RsaKeyPair::from_pkcs8(pkcs8_bytes)
+        .map_err(|e| format!("Failed to initialize RSA key pair: {:?}", e))?;
+
+    let rng = ring::rand::SystemRandom::new();
+    let mut signature = vec![0u8; key_pair.public().modulus_len()];
+    key_pair
+        .sign(&ring::signature::RSA_PKCS1_SHA256, &rng, message.as_bytes(), &mut signature)
+        .map_err(|e| format!("RSA signing failed: {:?}", e))?;
+
+    let b64_sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signature);
+    Ok(format!("{}.{}", message, b64_sig))
+}
+
+async fn exchange_service_account_token(
+    client: &reqwest::Client,
+    jwt: &str,
+    token_uri: &str,
+) -> Result<String, String> {
+    let params = [
+        ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+        ("assertion", jwt),
+    ];
+    let res = client
+        .post(token_uri)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Token request failed: {}", e))?;
+
+    if !res.status().is_success() {
+        let err_text = res.text().await.unwrap_or_default();
+        return Err(format!("OAuth token exchange failed: {}", err_text));
+    }
+
+    let val: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {}", e))?;
+
+    val["access_token"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "No access_token returned by Google OAuth".to_string())
+}
+
 #[tauri::command]
 pub async fn ping_ai_model(
     provider: String,
@@ -447,21 +521,10 @@ pub async fn ping_ai_model(
                 model.trim()
             };
 
-            // 1. Check if Service Account JSON was provided
-            if let Some(sa_raw) = service_account_json.filter(|s| !s.trim().is_empty()) {
-                match blinky_agent::providers::vertex::validate_service_account_json(&sa_raw) {
-                    Ok(creds) => {
-                        let latency = t0.elapsed().as_millis() as u64;
-                        return Ok(PingResult {
-                            ok: true,
-                            provider: prov,
-                            model: active_model.to_string(),
-                            latency_ms: latency,
-                            status_code: 200,
-                            error: None,
-                            details: Some(format!("Valid Service Account (Project: {}, Email: {})", creds.project_id, creds.client_email)),
-                        });
-                    }
+            // If a Service Account JSON string is provided, perform live RS256 token exchange & live 1-token probe
+            if let Some(ref sa_raw) = service_account_json.filter(|s| !s.trim().is_empty()) {
+                let creds = match blinky_agent::providers::vertex::validate_service_account_json(sa_raw) {
+                    Ok(c) => c,
                     Err(e) => {
                         let latency = t0.elapsed().as_millis() as u64;
                         return Ok(PingResult {
@@ -474,7 +537,98 @@ pub async fn ping_ai_model(
                             details: Some(e.to_string()),
                         });
                     }
-                }
+                };
+
+                let jwt = match create_service_account_jwt(&creds) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        let latency = t0.elapsed().as_millis() as u64;
+                        return Ok(PingResult {
+                            ok: false,
+                            provider: prov,
+                            model: active_model.to_string(),
+                            latency_ms: latency,
+                            status_code: 400,
+                            error: Some("JWT creation failed".into()),
+                            details: Some(e),
+                        });
+                    }
+                };
+
+                let access_token = match exchange_service_account_token(&client, &jwt, &creds.token_uri).await {
+                    Ok(tok) => tok,
+                    Err(e) => {
+                        let latency = t0.elapsed().as_millis() as u64;
+                        return Ok(PingResult {
+                            ok: false,
+                            provider: prov,
+                            model: active_model.to_string(),
+                            latency_ms: latency,
+                            status_code: 401,
+                            error: Some("OAuth token exchange failed".into()),
+                            details: Some(e),
+                        });
+                    }
+                };
+
+                let proj = if !creds.project_id.is_empty() {
+                    creds.project_id.clone()
+                } else {
+                    project_id.clone().unwrap_or_default()
+                };
+
+                let url = format!(
+                    "https://aiplatform.googleapis.com/v1beta1/projects/{}/locations/global/publishers/google/models/{}:generateContent",
+                    proj,
+                    urlencoding::encode(active_model)
+                );
+                let res = client
+                    .post(&url)
+                    .bearer_auth(&access_token)
+                    .json(&json!({
+                        "contents": [{ "role": "user", "parts": [{ "text": "ping" }] }],
+                        "generationConfig": { "maxOutputTokens": 1 }
+                    }))
+                    .send()
+                    .await;
+
+                let latency = t0.elapsed().as_millis() as u64;
+                return match res {
+                    Ok(resp) => {
+                        let status = resp.status().as_u16();
+                        if resp.status().is_success() {
+                            Ok(PingResult {
+                                ok: true,
+                                provider: prov,
+                                model: active_model.to_string(),
+                                latency_ms: latency,
+                                status_code: 200,
+                                error: None,
+                                details: Some(format!("Vertex AI Live Authenticated ({}ms) · SA: {}", latency, creds.client_email)),
+                            })
+                        } else {
+                            let err_body = resp.text().await.unwrap_or_default();
+                            Ok(PingResult {
+                                ok: false,
+                                provider: prov,
+                                model: active_model.to_string(),
+                                latency_ms: latency,
+                                status_code: status,
+                                error: Some(format!("HTTP {}", status)),
+                                details: Some(format!("Vertex response: {}", err_body)),
+                            })
+                        }
+                    }
+                    Err(e) => Ok(PingResult {
+                        ok: false,
+                        provider: prov,
+                        model: active_model.to_string(),
+                        latency_ms: latency,
+                        status_code: 0,
+                        error: Some(e.to_string()),
+                        details: Some(format!("Vertex endpoint unreachable for project {}", proj)),
+                    }),
+                };
             }
 
             let proj = project_id
@@ -1168,4 +1322,149 @@ pub async fn fetch_provider_models(
     };
 
     Ok(with_auto_option(models))
+}
+
+
+#[tauri::command]
+pub async fn transcribe_audio_native(
+    engine: String,
+    model: String,
+    audio_base64: String,
+    mime_type: String,
+    api_key: Option<String>,
+    fallback_model: Option<String>,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(35))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let eng = engine.to_lowercase().trim().to_string();
+
+    if eng.starts_with("gemini") {
+        let key = api_key
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+            .or_else(|| std::env::var("GOOGLE_API_KEY").ok())
+            .ok_or_else(|| "Gemini API key is not configured.".to_string())?;
+
+        let clean_mime = if mime_type.is_empty() {
+            "audio/webm".to_string()
+        } else {
+            mime_type.split(';').next().unwrap_or("audio/webm").to_string()
+        };
+
+        let call_gemini = |target_model: &str| {
+            let client = client.clone();
+            let key = key.clone();
+            let clean_mime = clean_mime.clone();
+            let audio_base64 = audio_base64.clone();
+            let target_model = target_model.to_string();
+            async move {
+                let url = format!(
+                    "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                    urlencoding::encode(&target_model),
+                    urlencoding::encode(&key)
+                );
+                let payload = json!({
+                    "contents": [{
+                        "parts": [
+                            { "text": "Transcribe this spoken audio accurately. Output ONLY the raw transcription without commentary, markdown, or timestamps." },
+                            {
+                                "inlineData": {
+                                    "mimeType": clean_mime,
+                                    "data": audio_base64
+                                }
+                            }
+                        ]
+                    }]
+                });
+
+                let res = client.post(&url).json(&payload).send().await.map_err(|e| e.to_string())?;
+                let status = res.status();
+                if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    return Err("429_RATE_LIMIT".to_string());
+                }
+                if !status.is_success() {
+                    let err = res.text().await.unwrap_or_default();
+                    return Err(format!("Gemini API error ({}): {}", status, err));
+                }
+
+                let val: Value = res.json().await.map_err(|e| e.to_string())?;
+                let mut transcript = String::new();
+                if let Some(parts) = val["candidates"][0]["content"]["parts"].as_array() {
+                    for part in parts {
+                        if let Some(t) = part["audioTranscription"]["text"].as_str() {
+                            transcript.push_str(t);
+                        } else if let Some(t) = part["text"].as_str() {
+                            transcript.push_str(t);
+                        }
+                    }
+                }
+                Ok(transcript.trim().to_string())
+            }
+        };
+
+        match call_gemini(&model).await {
+            Ok(text) if !text.is_empty() => Ok(text),
+            Ok(_) => {
+                if let Some(ref fb) = fallback_model.filter(|m| !m.trim().is_empty() && m.as_str() != "none") {
+                    call_gemini(fb).await
+                } else {
+                    Ok(String::new())
+                }
+            }
+            Err(e) if e == "429_RATE_LIMIT" => {
+                if let Some(ref fb) = fallback_model.filter(|m| !m.trim().is_empty() && m.as_str() != "none") {
+                    call_gemini(fb).await
+                } else {
+                    Err("Gemini STT quota limit reached (429)".to_string())
+                }
+            }
+            Err(e) => {
+                if let Some(ref fb) = fallback_model.filter(|m| !m.trim().is_empty() && m.as_str() != "none") {
+                    call_gemini(fb).await
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    } else if eng == "openai" || eng == "whisper" || eng == "whisper-1" {
+        let key = api_key
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .ok_or_else(|| "OpenAI API key is not configured.".to_string())?;
+
+        let audio_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&audio_base64)
+            .map_err(|e| format!("Invalid base64 audio: {}", e))?;
+
+        let part = reqwest::multipart::Part::bytes(audio_bytes)
+            .file_name("audio.webm")
+            .mime_str(&mime_type)
+            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(vec![]));
+
+        let form = reqwest::multipart::Form::new()
+            .part("file", part)
+            .text("model", "whisper-1")
+            .text("response_format", "json");
+
+        let res = client
+            .post("https://api.openai.com/v1/audio/transcriptions")
+            .bearer_auth(key)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !res.status().is_success() {
+            let err = res.text().await.unwrap_or_default();
+            return Err(format!("OpenAI Whisper error: {}", err));
+        }
+
+        let val: Value = res.json().await.map_err(|e| e.to_string())?;
+        Ok(val["text"].as_str().unwrap_or_default().trim().to_string())
+    } else {
+        Err(format!("Unsupported STT engine: {}", engine))
+    }
 }

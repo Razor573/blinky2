@@ -6,6 +6,7 @@ mod transport;
 mod websocket;
 
 pub use ai_commands::{
+    transcribe_audio_native,
     fetch_provider_models, get_oauth_status, ping_ai_model, sign_out_oauth,
     start_antigravity_login, start_codex_login, ModelOption, OAuthSession, OAuthStatus, PingResult,
 };
@@ -165,7 +166,10 @@ fn cancel_tutor(run_id: String) -> Result<bool, String> {
     {
         // The Python worker may have launched cua-driver or another actuator
         // subprocess. Kill the process tree so no detached click loop survives.
-        let taskkill = Command::new("taskkill")
+        use std::os::windows::process::CommandExt;
+        let mut kill_cmd = Command::new("taskkill");
+        kill_cmd.creation_flags(0x08000000);
+        let taskkill = kill_cmd
             .arg("/PID")
             .arg(pid.to_string())
             .arg("/T")
@@ -764,14 +768,23 @@ fn run_python_worker(
     let python = python_executable(&root);
     let env_file_vars = read_env_file(&root);
 
-    let mut child = Command::new(python)
+    let mut py_cmd = Command::new(python);
+    py_cmd
         .arg(script)
         .current_dir(&root)
         .env("PYTHONWARNINGS", "ignore")
         .envs(env_file_vars)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        py_cmd.creation_flags(0x08000000);
+    }
+
+    let mut child = py_cmd
         .spawn()
         .map_err(|err| format!("Failed to start Python worker: {err}"))?;
     let pid = child.id();
@@ -1377,6 +1390,29 @@ fn start_wake_word_detector(app: &AppHandle) {
     }
 }
 
+
+#[tauri::command]
+fn get_application_logs(app: AppHandle, limit: Option<usize>) -> Result<String, String> {
+    let root = project_root(&app)?;
+    let log_file = root.join("tmp").join("logs").join("blinky.log");
+    if !log_file.exists() {
+        return Ok("No application logs recorded yet.".to_string());
+    }
+    let content = std::fs::read_to_string(&log_file).map_err(|e| e.to_string())?;
+    let lines: Vec<&str> = content.lines().collect();
+    let max = limit.unwrap_or(250);
+    let start = if lines.len() > max { lines.len() - max } else { 0 };
+    Ok(lines[start..].join("\n"))
+}
+
+#[tauri::command]
+fn open_logs_folder(app: AppHandle) -> Result<(), String> {
+    let root = project_root(&app)?;
+    let log_dir = root.join("tmp").join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    open_folder(log_dir.to_string_lossy().to_string())
+}
+
 pub fn run() {
     #[cfg(target_os = "windows")]
     if !acquire_single_instance() {
@@ -1424,7 +1460,10 @@ pub fn run() {
             start_antigravity_login,
             start_codex_login,
             get_oauth_status,
-            sign_out_oauth
+            sign_out_oauth,
+            transcribe_audio_native,
+            get_application_logs,
+            open_logs_folder
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

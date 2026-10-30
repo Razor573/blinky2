@@ -566,6 +566,33 @@ export function CommandBar() {
   };
 
   // Vertex AI Service Account JSON
+  const [showVertexSaKey, setShowVertexSaKey] = useState<boolean>(false);
+  const [showLogsModal, setShowLogsModal] = useState<boolean>(false);
+  const [appLogsContent, setAppLogsContent] = useState<string>('');
+  const [loadingLogs, setLoadingLogs] = useState<boolean>(false);
+
+  const handleViewLogs = async () => {
+    setLoadingLogs(true);
+    try {
+      const logs = await invoke<string>('get_application_logs', { limit: 250 });
+      setAppLogsContent(logs);
+      setShowLogsModal(true);
+    } catch (e: any) {
+      setAppLogsContent(String(e?.message || e || 'Failed to read logs'));
+      setShowLogsModal(true);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  const handleOpenLogsFolder = async () => {
+    try {
+      await invoke('open_logs_folder');
+    } catch (e: any) {
+      console.error('Failed to open logs folder:', e);
+    }
+  };
+
   const [vertexServiceAccountJson, setVertexServiceAccountJson] = useState<string>(() => {
     return localStorage.getItem('clinky_vertex_service_account_json') || '';
   });
@@ -616,83 +643,41 @@ export function CommandBar() {
   };
 
   const transcribeWithGemini = async (blob: Blob, requestedModel?: string): Promise<string> => {
-    const key = geminiApiKey || (import.meta as any).env?.VITE_GEMINI_API_KEY;
-    if (!key) {
-      throw new Error('Gemini API Key is not configured.');
-    }
+    const key = geminiApiKey || (import.meta as any).env?.VITE_GEMINI_API_KEY || '';
     const base64Audio = await blobToBase64(blob);
-    const mimeType = blob.type && blob.type.length > 0 ? blob.type.split(';')[0] : 'audio/webm';
-
-    const callModel = async (modelName: string): Promise<string> => {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(key)}`;
-      const payload = {
-        contents: [
-          {
-            parts: [
-              { text: 'Transcribe this spoken audio accurately into text. Output ONLY the raw transcript without commentary, quotes, markdown, or timestamps.' },
-              {
-                inlineData: {
-                  mimeType,
-                  data: base64Audio
-                }
-              }
-            ]
-          }
-        ]
-      };
-
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.status === 429) {
-        throw new Error('429_RATE_LIMIT');
-      }
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Gemini STT error (${res.status}): ${errText}`);
-      }
-
-      const data = await res.json();
-      return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-    };
-
-    const primary = requestedModel || primarySttModel || 'gemini-3.5-transcribe';
+    const targetModel = requestedModel || primarySttModel || 'gemini-3.5-transcribe';
     try {
-      return await callModel(primary);
+      const transcript = await invoke<string>('transcribe_audio_native', {
+        engine: 'gemini',
+        model: targetModel,
+        audioBase64: base64Audio,
+        mimeType: blob.type || 'audio/webm',
+        apiKey: key || null,
+        fallbackModel: autoRateLimitFallback && fallbackSttModel !== 'none' ? fallbackSttModel : null,
+      });
+      return transcript;
     } catch (err: any) {
-      if ((err?.message === '429_RATE_LIMIT' || String(err).includes('429')) && autoRateLimitFallback && fallbackSttModel && fallbackSttModel !== 'none') {
-        console.warn(`Gemini STT model ${primary} encountered 429. Automatically falling back to ${fallbackSttModel}...`);
-        setStatus(`Rate limit hit on ${primary}. Failing over to ${fallbackSttModel}...`);
-        return await callModel(fallbackSttModel);
-      }
+      console.error('Native Gemini STT error:', err);
       throw err;
     }
   };
 
   const transcribeWithWhisper = async (blob: Blob, key: string, model = 'whisper-1'): Promise<string> => {
-    const formData = new FormData();
-    formData.append('file', blob, 'audio.webm');
-    formData.append('model', model);
-    formData.append('response_format', 'json');
-
-    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${key}`
-      },
-      body: formData
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`OpenAI Whisper error (${res.status}): ${errText}`);
+    const base64Audio = await blobToBase64(blob);
+    try {
+      const transcript = await invoke<string>('transcribe_audio_native', {
+        engine: 'whisper',
+        model,
+        audioBase64: base64Audio,
+        mimeType: blob.type || 'audio/webm',
+        apiKey: key,
+        fallbackModel: null,
+      });
+      return transcript;
+    } catch (err: any) {
+      console.error('Native Whisper STT error:', err);
+      throw err;
     }
-
-    const data = await res.json();
-    return data.text?.trim() || '';
   };
 
   const resolveAutoModel = (query: string, currentProv: string, _targetAgent: 'agent1' | 'agent2'): string => {
@@ -1743,7 +1728,8 @@ export function CommandBar() {
     }
 
     if (transcribedText) {
-      setStatus(`Searching for: "${transcribedText}"`);
+      setQuestion(transcribedText);
+      setStatus('');
       void executeTutor(transcribedText, true);
     } else {
       if (!hasGemini && !hasOpenAI && !hasAssemblyAI && !hasSarvam && !hasGroq) {
@@ -4842,29 +4828,62 @@ export function CommandBar() {
                         </select>
                       </div>
 
-                      {/* Service Account JSON Textarea */}
-                      <div style={{ marginTop: '8px' }}>
-                        <label style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', display: 'block' }}>
-                          Service Account Key JSON (optional · auto-populates Project ID &amp; verifies credentials)
-                        </label>
-                        <textarea
-                          className="settings-text-input"
-                          rows={3}
-                          placeholder='{"type": "service_account", "project_id": "my-gcp-project", "client_email": "service-account@...", "private_key": "..."}'
-                          value={vertexServiceAccountJson}
-                          onChange={(e) => updateVertexServiceAccountJson(e.target.value)}
-                          style={{
-                            width: '100%',
-                            fontFamily: 'monospace',
-                            fontSize: '11px',
-                            resize: 'vertical',
-                            background: 'rgba(0, 0, 0, 0.25)',
-                            border: vertexParsedSa && !vertexParsedSa.valid ? '1px solid #ef4444' : '1px solid rgba(255, 255, 255, 0.12)',
-                            borderRadius: '6px',
-                            padding: '8px',
-                          }}
-                        />
-                      </div>
+                      {/* Service Account JSON Masked / Editor */}
+                      {vertexParsedSa?.valid && !showVertexSaKey ? (
+                        <div style={{ marginTop: '8px', padding: '10px 12px', background: 'rgba(0, 0, 0, 0.35)', border: '1px solid rgba(74, 222, 128, 0.3)', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <div>
+                            <div style={{ fontFamily: 'monospace', fontSize: '11px', color: '#4ade80', letterSpacing: '1px' }}>
+                              ••••••••••••••••••••••••••••••••
+                            </div>
+                            <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '3px' }}>
+                              Service Account Configured · Project: <strong style={{ color: '#fff' }}>{vertexParsedSa.projectId}</strong> · Email: <strong style={{ color: '#fff' }}>{vertexParsedSa.clientEmail}</strong>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="settings-btn-action settings-btn-secondary"
+                            style={{ padding: '3px 8px', fontSize: '10px' }}
+                            onClick={() => setShowVertexSaKey(true)}
+                          >
+                            Show / Edit Key
+                          </button>
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: '8px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                            <label style={{ fontSize: '11px', color: '#94a3b8' }}>
+                              Service Account Key JSON (optional · auto-populates Project ID &amp; verifies credentials)
+                            </label>
+                            {vertexParsedSa?.valid && (
+                              <button
+                                type="button"
+                                className="key-btn-clear"
+                                style={{ fontSize: '10px' }}
+                                onClick={() => setShowVertexSaKey(false)}
+                              >
+                                Hide Key
+                              </button>
+                            )}
+                          </div>
+                          <textarea
+                            className="settings-text-input"
+                            rows={3}
+                            placeholder='{"type": "service_account", "project_id": "my-gcp-project", "client_email": "service-account@...", "private_key": "..."}'
+                            value={vertexServiceAccountJson}
+                            onChange={(e) => updateVertexServiceAccountJson(e.target.value)}
+                            style={{
+                              width: '100%',
+                              fontFamily: 'monospace',
+                              fontSize: '11px',
+                              resize: 'vertical',
+                              background: 'rgba(0, 0, 0, 0.25)',
+                              border: vertexParsedSa && !vertexParsedSa.valid ? '1px solid #ef4444' : '1px solid rgba(255, 255, 255, 0.12)',
+                              borderRadius: '6px',
+                              padding: '8px',
+                            }}
+                          />
+                        </div>
+                      )}
                       <p className="settings-help-text" style={{ marginTop: '6px' }}>
                         Enter your Google Cloud Project ID or paste a Service Account JSON for enterprise Vertex AI routing.
                       </p>
@@ -5122,6 +5141,40 @@ export function CommandBar() {
                       </div>
                     </div>
 
+                    {/* Application Logs & Diagnostics */}
+                    <div className="settings-section-card">
+                      <div className="settings-section-title">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <BookOpen size={16} style={{ color: '#38bdf8' }} />
+                          <span>Application Logs &amp; Diagnostics</span>
+                        </div>
+                        <span className="agent-badge-pill" style={{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8' }}>Diagnostics</span>
+                      </div>
+                      <p className="settings-help-text">
+                        Inspect live runtime logs, automation execution traces, and actuator diagnostics.
+                      </p>
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                        <button
+                          type="button"
+                          className="settings-btn-action"
+                          style={{ padding: '6px 14px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                          onClick={() => void handleViewLogs()}
+                          disabled={loadingLogs}
+                        >
+                          {loadingLogs ? <Loader2 className="spin" size={13} /> : <BookOpen size={13} />}
+                          <span>{loadingLogs ? 'Loading Logs...' : 'View Application Logs'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="settings-btn-action settings-btn-secondary"
+                          style={{ padding: '6px 14px', fontSize: '12px' }}
+                          onClick={() => void handleOpenLogsFolder()}
+                        >
+                          📂 Open Logs Folder
+                        </button>
+                      </div>
+                    </div>
+
                     <div className="settings-section-card settings-about-hero">
                       <div className="settings-about-logo">
                         <Bot size={28} />
@@ -5158,6 +5211,123 @@ export function CommandBar() {
                   </>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Application Logs Modal */}
+      {showLogsModal && (
+        <div
+          className="settings-modal-overlay"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 12000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px',
+          }}
+          onClick={() => setShowLogsModal(false)}
+        >
+          <div
+            className="settings-dialog-card"
+            style={{
+              width: '840px',
+              maxWidth: '92vw',
+              height: '580px',
+              maxHeight: '85vh',
+              display: 'flex',
+              flexDirection: 'column',
+              background: '#0f172a',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: '12px',
+              overflow: 'hidden',
+              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.6)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 18px',
+                borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                background: 'rgba(255, 255, 255, 0.03)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <BookOpen size={16} style={{ color: '#38bdf8' }} />
+                <span style={{ fontWeight: 600, fontSize: '14px', color: '#f8fafc' }}>
+                  Application Runtime Logs
+                </span>
+                <span className="agent-badge-pill" style={{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', fontSize: '10px' }}>
+                  blinky.log
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  type="button"
+                  className="settings-btn-action settings-btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '5px' }}
+                  onClick={() => void handleViewLogs()}
+                  disabled={loadingLogs}
+                >
+                  <RefreshCw size={11} className={loadingLogs ? 'spin' : ''} />
+                  <span>Refresh</span>
+                </button>
+                <button
+                  type="button"
+                  className="settings-btn-action settings-btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '11px' }}
+                  onClick={() => {
+                    void navigator.clipboard.writeText(appLogsContent);
+                    setStatus('Logs copied to clipboard.');
+                  }}
+                >
+                  Copy All
+                </button>
+                <button
+                  type="button"
+                  className="settings-btn-action settings-btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '11px' }}
+                  onClick={() => void handleOpenLogsFolder()}
+                >
+                  Open Folder
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowLogsModal(false)}
+                  style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '4px', display: 'flex' }}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+            <div style={{ flex: 1, padding: '12px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <pre
+                style={{
+                  flex: 1,
+                  margin: 0,
+                  padding: '12px',
+                  background: 'rgba(0, 0, 0, 0.55)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: '8px',
+                  color: '#e2e8f0',
+                  fontFamily: 'JetBrains Mono, Consolas, monospace',
+                  fontSize: '11px',
+                  lineHeight: 1.5,
+                  overflow: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {appLogsContent || 'No logs available.'}
+              </pre>
             </div>
           </div>
         </div>
