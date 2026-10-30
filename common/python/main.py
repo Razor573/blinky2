@@ -1702,6 +1702,45 @@ def run_web_intelligence(
     started: float,
     warnings: list[str],
 ) -> dict:
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    if gemini_key:
+        try:
+            from ai.gemini_client import ask_gemini_text
+            _emit_status("web_intelligence", "Searching with Google Grounding and synthesizing intelligence...")
+            prompt = question
+            if conversation_history:
+                context_lines = []
+                for msg in conversation_history[-6:]:
+                    role = msg.get("role", "user")
+                    c = msg.get("content", "")
+                    if c:
+                        context_lines.append(f"{role.capitalize()}: {c}")
+                if context_lines:
+                    prompt = "Conversation History:\n" + "\n".join(context_lines) + f"\n\nCurrent Question: {question}"
+
+            res = ask_gemini_text(prompt, web_search=True)
+            summary = res.get("text", "").strip()
+            sources = res.get("sources", [])
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            return {
+                "summary": summary,
+                "steps": [],
+                "active_app": {"title": "", "process": "", "supported": False},
+                "ocr": {"count": 0, "items": []},
+                "elapsed_ms": elapsed_ms,
+                "provider": get_provider_label(),
+                "warnings": warnings,
+                "is_continuation": False,
+                "web": {
+                    "needs_web_search": True,
+                    "searxng_offline": False,
+                    "sources": sources,
+                },
+            }
+        except Exception as exc:
+            LOGGER.warning("Gemini web search grounding failed, falling back to WILPipeline: %s", exc)
+            warnings.append(f"Gemini search grounding fallback: {exc}")
+
     import asyncio
     from wil.pipeline import WILPipeline
 

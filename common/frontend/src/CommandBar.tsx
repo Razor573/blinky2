@@ -1,5 +1,5 @@
 import { emit, listen } from '@tauri-apps/api/event';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowUp, Bot, Loader2, Minus, Sparkles, X, Settings, Check, Mic, Volume2, Globe, Square, QrCode, Paperclip, Film, Image as ImageIcon, Music, FileVideo, BookOpen, Cpu, Zap, Brain, Cloud, Wrench, Key, Smartphone, MessageSquare, Command, Palette, Info, Clock, Trash2, Plus, Search, ChevronDown, Edit3, RefreshCw, Sliders } from 'lucide-react';
 import { AnchorHTMLAttributes, FormEvent, useEffect, useRef, useState, cloneElement, isValidElement } from 'react';
@@ -347,6 +347,12 @@ export function CommandBar() {
   const [steps, setSteps] = useState<any[]>([]);
   const [showGuideCompletionSummary, setShowGuideCompletionSummary] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  useEffect(() => {
+    if (showSettings) {
+      void checkOAuthStatus('antigravity');
+      void checkOAuthStatus('codex');
+    }
+  }, [showSettings]);
   const [showHistory, setShowHistory] = useState(false);
   const [pcSessions, setPcSessions] = useState<PcChatSession[]>([]);
   const [activePcSession, setActivePcSession] = useState<PcChatSession | null>(null);
@@ -490,21 +496,190 @@ export function CommandBar() {
     }
   };
 
-  // Agent 2: Knowledge & RAG (Gemini) Model Configuration & Search
+  // Location and STT Configuration
+  const [vertexLocation, setVertexLocation] = useState<string>(() => {
+    return localStorage.getItem('clinky_vertex_location') || 'global';
+  });
+  const updateVertexLocation = (val: string) => {
+    setVertexLocation(val);
+    localStorage.setItem('clinky_vertex_location', val);
+  };
+
+  const [sttProvider, setSttProvider] = useState<string>(() => {
+    return localStorage.getItem('blinky_stt_provider') || 'gemini-3.5-transcribe';
+  });
+  const updateSttProvider = (val: string) => {
+    setSttProvider(val);
+    localStorage.setItem('blinky_stt_provider', val);
+  };
+
+  // OAuth State & Actions
+  interface OAuthStatusState {
+    connected: boolean;
+    provider: string;
+    email?: string;
+    project_id?: string;
+    expires_at?: number;
+  }
+  const [antigravityOAuth, setAntigravityOAuth] = useState<OAuthStatusState>({
+    connected: false,
+    provider: 'antigravity',
+  });
+  const [codexOAuth, setCodexOAuth] = useState<OAuthStatusState>({
+    connected: false,
+    provider: 'codex',
+  });
+  const [oauthLoading, setOauthLoading] = useState<Record<string, boolean>>({});
+
+  const checkOAuthStatus = async (prov: string) => {
+    try {
+      const status = await invoke<OAuthStatusState>('get_oauth_status', { provider: prov });
+      if (prov === 'antigravity') setAntigravityOAuth(status);
+      if (prov === 'codex') setCodexOAuth(status);
+    } catch (e) {
+      console.warn(`Failed to check OAuth status for ${prov}:`, e);
+    }
+  };
+
+  const handleOAuthLogin = async (prov: 'antigravity' | 'codex') => {
+    setOauthLoading((prev) => ({ ...prev, [prov]: true }));
+    try {
+      if (prov === 'antigravity') {
+        await invoke('start_antigravity_login');
+      } else {
+        await invoke('start_codex_login');
+      }
+      let attempts = 0;
+      const interval = setInterval(async () => {
+        attempts++;
+        try {
+          const s = await invoke<OAuthStatusState>('get_oauth_status', { provider: prov });
+          if (s.connected || attempts > 25) {
+            clearInterval(interval);
+            if (prov === 'antigravity') setAntigravityOAuth(s);
+            if (prov === 'codex') setCodexOAuth(s);
+            setOauthLoading((prev) => ({ ...prev, [prov]: false }));
+          }
+        } catch {
+          if (attempts > 25) {
+            clearInterval(interval);
+            setOauthLoading((prev) => ({ ...prev, [prov]: false }));
+          }
+        }
+      }, 2000);
+    } catch (err: any) {
+      console.error(`OAuth login error for ${prov}:`, err);
+      setOauthLoading((prev) => ({ ...prev, [prov]: false }));
+    }
+  };
+
+  const handleOAuthSignOut = async (prov: 'antigravity' | 'codex') => {
+    setOauthLoading((prev) => ({ ...prev, [prov]: true }));
+    try {
+      await invoke('sign_out_oauth', { provider: prov });
+      if (prov === 'antigravity') {
+        setAntigravityOAuth({ connected: false, provider: 'antigravity' });
+      } else {
+        setCodexOAuth({ connected: false, provider: 'codex' });
+      }
+    } catch (e) {
+      console.error(`Failed to sign out ${prov}:`, e);
+    } finally {
+      setOauthLoading((prev) => ({ ...prev, [prov]: false }));
+    }
+  };
+
+  const handleTestAudioPlayback = () => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.32);
+    } catch (e) {
+      console.error('Audio playback test error:', e);
+    }
+  };
+
+  // Agent 2: Knowledge & RAG Model Configuration & Search
+  const [agent2Provider, setAgent2Provider] = useState<string>(() => {
+    return localStorage.getItem('blinky_agent2_provider') || 'gemini';
+  });
   const [geminiModel, setGeminiModel] = useState<string>(() => {
     const saved = localStorage.getItem('blinky_gemini_model');
     return (saved && !saved.includes('2.0') && !saved.includes('2.5')) ? saved : 'gemini-3.8-flash';
   });
+  const [agent2Model, setAgent2Model] = useState<string>(() => {
+    const saved = localStorage.getItem('blinky_agent2_model');
+    return saved || 'gemini-3.8-flash';
+  });
   const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
     return localStorage.getItem('blinky_gemini_api_key') || '';
   });
+  const [agent2SearchQuery, setAgent2SearchQuery] = useState<string>('');
+  const [isAgent2SearchOpen, setIsAgent2SearchOpen] = useState<boolean>(false);
+  const [agent2ModelsList, setAgent2ModelsList] = useState<DynamicModelItem[]>(CUE_GEMINI_CATALOG);
+  const [agent2ModelsLoading, setAgent2ModelsLoading] = useState<boolean>(false);
+  const agent2FetchSeqRef = useRef<number>(0);
+
   const [geminiSearchQuery, setGeminiSearchQuery] = useState<string>('');
   const [isGeminiSearchOpen, setIsGeminiSearchOpen] = useState<boolean>(false);
   const [showGeminiConfig, setShowGeminiConfig] = useState<boolean>(false);
   const [geminiModelsList, setGeminiModelsList] = useState<DynamicModelItem[]>(CUE_GEMINI_CATALOG);
   const [geminiModelsLoading, setGeminiModelsLoading] = useState<boolean>(false);
   const geminiFetchSeqRef = useRef<number>(0);
-  const [settingsTab, setSettingsTab] = useState<'agents' | 'keys' | 'mobile' | 'shortcuts' | 'about'>('agents');
+  const [settingsTab, setSettingsTab] = useState<'agent1' | 'agent2' | 'voice' | 'keys' | 'mobile' | 'about'>('agent1');
+
+  const updateAgent2Provider = (prov: string) => {
+    setAgent2Provider(prov);
+    localStorage.setItem('blinky_agent2_provider', prov);
+    const catalog = getCuratedCatalog(prov);
+    if (catalog.length > 0) {
+      setAgent2Model(catalog[0].id);
+      localStorage.setItem('blinky_agent2_model', catalog[0].id);
+      if (prov === 'gemini') {
+        setGeminiModel(catalog[0].id);
+        localStorage.setItem('blinky_gemini_model', catalog[0].id);
+      }
+    }
+    void refreshAgent2Models(prov);
+  };
+
+  const updateAgent2Model = (newModel: string) => {
+    const clean = newModel.trim();
+    if (!clean) return;
+    setAgent2Model(clean);
+    localStorage.setItem('blinky_agent2_model', clean);
+    if (agent2Provider === 'gemini') {
+      setGeminiModel(clean);
+      localStorage.setItem('blinky_gemini_model', clean);
+    }
+  };
+
+  const refreshAgent2Models = async (prov = agent2Provider) => {
+    const seq = ++agent2FetchSeqRef.current;
+    setAgent2ModelsLoading(true);
+    const key = getProviderKey(prov);
+    try {
+      const res = await fetchDynamicModels(prov, key, customUrl);
+      if (seq === agent2FetchSeqRef.current && res.models && res.models.length > 0) {
+        setAgent2ModelsList(res.models);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch Agent 2 models dynamically:', e);
+    } finally {
+      if (seq === agent2FetchSeqRef.current) {
+        setAgent2ModelsLoading(false);
+      }
+    }
+  };
 
   const updateGeminiModel = (newModel: string) => {
     const clean = newModel.trim();
@@ -540,11 +715,17 @@ export function CommandBar() {
     }
   };
 
-  const handleTestPing = async (prov: string, key: string, model?: string, url?: string) => {
+  const handleTestPing = async (
+    prov: string,
+    key: string,
+    model?: string,
+    url?: string,
+    projId?: string
+  ) => {
     setPingTesting(true);
     setPingResult(null);
     try {
-      const res = await pingModel(prov, key, model, url);
+      const res = await pingModel(prov, key, model, url, projId || (prov === 'vertex' ? vertexProjectId : undefined));
       setPingResult(res);
     } catch (e: any) {
       setPingResult({
@@ -3594,11 +3775,27 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
               <div className="settings-modal-sidebar">
                 <button
                   type="button"
-                  className={`settings-sidebar-btn ${settingsTab === 'agents' ? 'active' : ''}`}
-                  onClick={() => setSettingsTab('agents')}
+                  className={`settings-sidebar-btn ${settingsTab === 'agent1' ? 'active' : ''}`}
+                  onClick={() => setSettingsTab('agent1')}
                 >
                   <Bot size={15} />
-                  <span>Multi-Agent Core</span>
+                  <span>Agent 1: OS Actuator</span>
+                </button>
+                <button
+                  type="button"
+                  className={`settings-sidebar-btn ${settingsTab === 'agent2' ? 'active' : ''}`}
+                  onClick={() => setSettingsTab('agent2')}
+                >
+                  <Brain size={15} />
+                  <span>Agent 2: Knowledge &amp; RAG</span>
+                </button>
+                <button
+                  type="button"
+                  className={`settings-sidebar-btn ${settingsTab === 'voice' ? 'active' : ''}`}
+                  onClick={() => setSettingsTab('voice')}
+                >
+                  <Mic size={15} />
+                  <span>Voice &amp; Audio</span>
                 </button>
                 <button
                   type="button"
@@ -3618,310 +3815,445 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                 </button>
                 <button
                   type="button"
-                  className={`settings-sidebar-btn ${settingsTab === 'shortcuts' ? 'active' : ''}`}
-                  onClick={() => setSettingsTab('shortcuts')}
-                >
-                  <Command size={15} />
-                  <span>Keybindings</span>
-                </button>
-                <button
-                  type="button"
                   className={`settings-sidebar-btn ${settingsTab === 'about' ? 'active' : ''}`}
                   onClick={() => setSettingsTab('about')}
                 >
                   <Info size={15} />
-                  <span>About &amp; System</span>
+                  <span>Keybindings &amp; System</span>
                 </button>
               </div>
 
               {/* Content Area */}
               <div className="settings-modal-content">
-                {/* TAB 1: AGENTS */}
-                {settingsTab === 'agents' && (
-                  <>
-                    {/* Agent 1: Computer-Use Actuator */}
-                    <div className="settings-section-card settings-agent-card agent1-active">
-                      <div className="settings-section-title">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <Bot size={16} style={{ color: '#ff5a36' }} />
-                          <span>Agent 1: OS Actuator</span>
-                        </div>
-                        <span className="agent-badge-pill ember">Vision &amp; Computer Use</span>
+                {/* TAB 1: AGENT 1 - OS ACTUATOR */}
+                {settingsTab === 'agent1' && (
+                  <div className="settings-section-card settings-agent-card agent1-active">
+                    <div className="settings-section-title">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Bot size={16} style={{ color: '#ff5a36' }} />
+                        <span>Agent 1: OS Actuator</span>
                       </div>
-                      <p className="settings-help-text">
-                        Orchestrates natural language commands into vision-guided OS clicks, keystrokes, and workflows.
-                      </p>
+                      <span className="agent-badge-pill ember">Vision &amp; Computer Use</span>
+                    </div>
+                    <p className="settings-help-text">
+                      Orchestrates natural language commands into vision-guided OS clicks, keystrokes, and workflows.
+                    </p>
 
-                      <div className="settings-input-group">
-                        <label className="settings-label">Backend Actuator Provider</label>
-                        <div className="settings-provider-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
-                          <div
-                            className={`provider-grid-item ${provider === 'gemini' ? 'active' : ''}`}
-                            onClick={() => void updateProvider('gemini')}
-                          >
-                            <Brain size={15} style={{ color: '#c084fc' }} />
-                            <span className="provider-grid-item-label">Google Gemini</span>
-                          </div>
-                          <div
-                            className={`provider-grid-item ${provider === 'vertex' ? 'active' : ''}`}
-                            onClick={() => void updateProvider('vertex')}
-                          >
-                            <Cloud size={15} style={{ color: '#60a5fa' }} />
-                            <span className="provider-grid-item-label">Vertex AI</span>
-                          </div>
-                          <div
-                            className={`provider-grid-item ${provider === 'antigravity' ? 'active' : ''}`}
-                            onClick={() => void updateProvider('antigravity')}
-                          >
-                            <Sparkles size={15} style={{ color: '#38bdf8' }} />
-                            <span className="provider-grid-item-label">Antigravity</span>
-                          </div>
-                          <div
-                            className={`provider-grid-item ${provider === 'codex' ? 'active' : ''}`}
-                            onClick={() => void updateProvider('codex')}
-                          >
-                            <Cpu size={15} style={{ color: '#10b981' }} />
-                            <span className="provider-grid-item-label">OpenAI Codex</span>
-                          </div>
-                          <div
-                            className={`provider-grid-item ${provider === 'openai' ? 'active' : ''}`}
-                            onClick={() => void updateProvider('openai')}
-                          >
-                            <Sparkles size={15} style={{ color: '#34d399' }} />
-                            <span className="provider-grid-item-label">OpenAI</span>
-                          </div>
-                          <div
-                            className={`provider-grid-item ${provider === 'anthropic' ? 'active' : ''}`}
-                            onClick={() => void updateProvider('anthropic')}
-                          >
-                            <Brain size={15} style={{ color: '#f97316' }} />
-                            <span className="provider-grid-item-label">Anthropic</span>
-                          </div>
-                          <div
-                            className={`provider-grid-item ${provider === 'custom' ? 'active' : ''}`}
-                            onClick={() => void updateProvider('custom')}
-                          >
-                            <Wrench size={15} style={{ color: '#e2e8f0' }} />
-                            <span className="provider-grid-item-label">Custom API</span>
-                          </div>
-                          <div
-                            className={`provider-grid-item ${provider === 'ollama' ? 'active' : ''}`}
-                            onClick={() => void updateProvider('ollama')}
-                          >
-                            <Cpu size={15} style={{ color: '#fbbf24' }} />
-                            <span className="provider-grid-item-label">Ollama (Local)</span>
-                          </div>
+                    <div className="settings-input-group">
+                      <label className="settings-label">Backend Actuator Provider</label>
+                      <div className="settings-provider-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
+                        <div
+                          className={`provider-grid-item ${provider === 'gemini' ? 'active' : ''}`}
+                          onClick={() => void updateProvider('gemini')}
+                        >
+                          <Brain size={15} style={{ color: '#c084fc' }} />
+                          <span className="provider-grid-item-label">Google Gemini</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${provider === 'vertex' ? 'active' : ''}`}
+                          onClick={() => void updateProvider('vertex')}
+                        >
+                          <Cloud size={15} style={{ color: '#60a5fa' }} />
+                          <span className="provider-grid-item-label">Vertex AI</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${provider === 'antigravity' ? 'active' : ''}`}
+                          onClick={() => void updateProvider('antigravity')}
+                        >
+                          <Sparkles size={15} style={{ color: '#38bdf8' }} />
+                          <span className="provider-grid-item-label">Antigravity</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${provider === 'codex' ? 'active' : ''}`}
+                          onClick={() => void updateProvider('codex')}
+                        >
+                          <Cpu size={15} style={{ color: '#10b981' }} />
+                          <span className="provider-grid-item-label">OpenAI Codex</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${provider === 'openai' ? 'active' : ''}`}
+                          onClick={() => void updateProvider('openai')}
+                        >
+                          <Sparkles size={15} style={{ color: '#34d399' }} />
+                          <span className="provider-grid-item-label">OpenAI</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${provider === 'anthropic' ? 'active' : ''}`}
+                          onClick={() => void updateProvider('anthropic')}
+                        >
+                          <Brain size={15} style={{ color: '#f97316' }} />
+                          <span className="provider-grid-item-label">Anthropic</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${provider === 'custom' ? 'active' : ''}`}
+                          onClick={() => void updateProvider('custom')}
+                        >
+                          <Wrench size={15} style={{ color: '#e2e8f0' }} />
+                          <span className="provider-grid-item-label">Custom API</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${provider === 'ollama' ? 'active' : ''}`}
+                          onClick={() => void updateProvider('ollama')}
+                        >
+                          <Cpu size={15} style={{ color: '#fbbf24' }} />
+                          <span className="provider-grid-item-label">Ollama (Local)</span>
                         </div>
                       </div>
+                    </div>
 
-                      {/* Model Selector & Search for Agent 1 */}
-                      <div className="settings-input-group">
-                        <div className="settings-input-header">
-                          <label className="settings-label">Actuator Model</label>
-                          <button
-                            type="button"
-                            className="settings-btn-action settings-btn-secondary"
-                            style={{ padding: '3px 8px', fontSize: '10.5px' }}
-                            onClick={() => void refreshAgent1Models()}
-                            disabled={agent1ModelsLoading}
-                          >
-                            <RefreshCw className={agent1ModelsLoading ? 'spin' : ''} size={11} />
-                            <span>{agent1ModelsLoading ? 'Fetching...' : 'Sync Models'}</span>
-                          </button>
+                    {/* Model Selector & Search for Agent 1 */}
+                    <div className="settings-input-group">
+                      <div className="settings-input-header">
+                        <label className="settings-label">Actuator Model</label>
+                        <button
+                          type="button"
+                          className="settings-btn-action settings-btn-secondary"
+                          style={{ padding: '3px 8px', fontSize: '10.5px' }}
+                          onClick={() => void refreshAgent1Models()}
+                          disabled={agent1ModelsLoading}
+                        >
+                          <RefreshCw className={agent1ModelsLoading ? 'spin' : ''} size={11} />
+                          <span>{agent1ModelsLoading ? 'Fetching...' : 'Sync Models'}</span>
+                        </button>
+                      </div>
+
+                      <div className="settings-search-container">
+                        <div className="settings-model-selector-row">
+                          <div className="settings-model-info">
+                            <span className="settings-model-name">{agent1Model}</span>
+                            <span className="settings-model-sub">Provider: {provider.toUpperCase()}</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <button
+                              type="button"
+                              className="settings-btn-action"
+                              onClick={() => setIsAgent1SearchOpen(!isAgent1SearchOpen)}
+                            >
+                              <Search size={12} />
+                              <span>{isAgent1SearchOpen ? 'Close Search' : 'Change Model'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="settings-btn-action settings-btn-secondary"
+                              onClick={() => void handleTestPing(provider, getProviderKey(provider), agent1Model, customUrl)}
+                              disabled={pingTesting}
+                            >
+                              ⚡ Ping
+                            </button>
+                          </div>
                         </div>
 
-                        <div className="settings-search-container">
-                          <div className="settings-model-selector-row">
-                            <div className="settings-model-info">
-                              <span className="settings-model-name">{agent1Model}</span>
-                              <span className="settings-model-sub">Provider: {provider.toUpperCase()}</span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <button
-                                type="button"
-                                className="settings-btn-action"
-                                onClick={() => setIsAgent1SearchOpen(!isAgent1SearchOpen)}
-                              >
-                                <Search size={12} />
-                                <span>{isAgent1SearchOpen ? 'Close Search' : 'Change Model'}</span>
-                              </button>
-                              <button
-                                type="button"
-                                className="settings-btn-action settings-btn-secondary"
-                                onClick={() => void handleTestPing(provider, getProviderKey(provider), agent1Model, customUrl)}
-                                disabled={pingTesting}
-                              >
-                                ⚡ Ping
-                              </button>
-                            </div>
-                          </div>
-
-                          {isAgent1SearchOpen && (
-                            <div className="settings-search-dropdown-menu">
-                              <input
-                                type="text"
-                                className="settings-text-input"
-                                placeholder={`Search or type custom model for ${provider}...`}
-                                value={agent1SearchQuery}
-                                onChange={(e) => setAgent1SearchQuery(e.target.value)}
-                                autoFocus
-                              />
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px', maxHeight: '240px', overflowY: 'auto' }}>
-                                {agent1SearchQuery.trim() && !agent1ModelsList.some((m) => m.id.toLowerCase() === agent1SearchQuery.trim().toLowerCase()) && (
+                        {isAgent1SearchOpen && (
+                          <div className="settings-search-dropdown-menu">
+                            <input
+                              type="text"
+                              className="settings-text-input"
+                              placeholder={`Search or type custom model for ${provider}...`}
+                              value={agent1SearchQuery}
+                              onChange={(e) => setAgent1SearchQuery(e.target.value)}
+                              autoFocus
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px', maxHeight: '240px', overflowY: 'auto' }}>
+                              {agent1SearchQuery.trim() && !agent1ModelsList.some((m) => m.id.toLowerCase() === agent1SearchQuery.trim().toLowerCase()) && (
+                                <div
+                                  className="settings-search-item"
+                                  style={{ borderBottom: '1px dashed rgba(255, 255, 255, 0.15)' }}
+                                  onClick={() => {
+                                    updateAgent1Model(agent1SearchQuery.trim());
+                                    setIsAgent1SearchOpen(false);
+                                  }}
+                                >
+                                  <div>
+                                    <div style={{ fontWeight: 600, color: '#38bdf8' }}>Use custom model: "{agent1SearchQuery.trim()}"</div>
+                                    <div style={{ fontSize: '10px', color: '#94a3b8' }}>Click to apply custom model slug</div>
+                                  </div>
+                                  <Plus size={14} style={{ color: '#38bdf8' }} />
+                                </div>
+                              )}
+                              {agent1ModelsList
+                                .filter((m) =>
+                                  m.id.toLowerCase().includes(agent1SearchQuery.toLowerCase()) ||
+                                  (m.name && m.name.toLowerCase().includes(agent1SearchQuery.toLowerCase()))
+                                )
+                                .slice(0, 30)
+                                .map((m) => (
                                   <div
-                                    className="settings-search-item"
-                                    style={{ borderBottom: '1px dashed rgba(255, 255, 255, 0.15)' }}
+                                    key={m.id}
+                                    className={`settings-search-item ${agent1Model === m.id ? 'selected' : ''}`}
                                     onClick={() => {
-                                      updateAgent1Model(agent1SearchQuery.trim());
+                                      updateAgent1Model(m.id);
                                       setIsAgent1SearchOpen(false);
                                     }}
                                   >
                                     <div>
-                                      <div style={{ fontWeight: 600, color: '#38bdf8' }}>Use custom model: "{agent1SearchQuery.trim()}"</div>
-                                      <div style={{ fontSize: '10px', color: '#94a3b8' }}>Click to apply custom model slug</div>
+                                      <div style={{ fontWeight: 600 }}>{m.name || m.id}</div>
+                                      <div style={{ fontSize: '10px', color: '#94a3b8' }}>{m.id}</div>
                                     </div>
-                                    <Plus size={14} style={{ color: '#38bdf8' }} />
+                                    {agent1Model === m.id && <Check size={14} style={{ color: '#ff5a36' }} />}
                                   </div>
-                                )}
-                                {agent1ModelsList
-                                  .filter((m) =>
-                                    m.id.toLowerCase().includes(agent1SearchQuery.toLowerCase()) ||
-                                    (m.name && m.name.toLowerCase().includes(agent1SearchQuery.toLowerCase()))
-                                  )
-                                  .slice(0, 30)
-                                  .map((m) => (
-                                    <div
-                                      key={m.id}
-                                      className={`settings-search-item ${agent1Model === m.id ? 'selected' : ''}`}
-                                      onClick={() => {
-                                        updateAgent1Model(m.id);
-                                        setIsAgent1SearchOpen(false);
-                                      }}
-                                    >
-                                      <div>
-                                        <div style={{ fontWeight: 600 }}>{m.name || m.id}</div>
-                                        <div style={{ fontSize: '10px', color: '#94a3b8' }}>{m.id}</div>
-                                      </div>
-                                      {agent1Model === m.id && <Check size={14} style={{ color: '#ff5a36' }} />}
-                                    </div>
-                                  ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Agent 2: Knowledge & RAG (Gemini) */}
-                    <div className="settings-section-card settings-agent-card agent2-active">
-                      <div className="settings-section-title">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <Brain size={16} style={{ color: '#c084fc' }} />
-                          <span>Agent 2: Knowledge &amp; RAG</span>
-                        </div>
-                        <div style={{ display: 'flex', gap: '6px' }}>
-                          <span className="agent-badge-pill violet">Google Gemini</span>
-                          <span className="agent-badge-pill violet">FastEmbed</span>
-                        </div>
-                      </div>
-                      <p className="settings-help-text">
-                        Powers document synthesis, smart context grounding, offline/online vector search, and web citations.
-                      </p>
-
-                      <div className="settings-input-group">
-                        <div className="settings-input-header">
-                          <label className="settings-label">Gemini Model</label>
-                          <button
-                            type="button"
-                            className="settings-btn-action settings-btn-secondary"
-                            style={{ padding: '3px 8px', fontSize: '10.5px' }}
-                            onClick={() => void refreshGeminiModels()}
-                            disabled={geminiModelsLoading}
-                          >
-                            <RefreshCw className={geminiModelsLoading ? 'spin' : ''} size={11} />
-                            <span>{geminiModelsLoading ? 'Fetching...' : 'Sync Catalog'}</span>
-                          </button>
-                        </div>
-
-                        <div className="settings-search-container">
-                          <div className="settings-model-selector-row">
-                            <div className="settings-model-info">
-                              <span className="settings-model-name">{geminiModel}</span>
-                              <span className="settings-model-sub">Multimodal &amp; RAG Core</span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <button
-                                type="button"
-                                className="settings-btn-action"
-                                onClick={() => setIsGeminiSearchOpen(!isGeminiSearchOpen)}
-                              >
-                                <Search size={12} />
-                                <span>{isGeminiSearchOpen ? 'Close Search' : 'Change Model'}</span>
-                              </button>
-                              <button
-                                type="button"
-                                className="settings-btn-action settings-btn-secondary"
-                                onClick={() => handleTestPing('gemini', geminiApiKey, geminiModel)}
-                                disabled={pingTesting}
-                              >
-                                ⚡ Ping
-                              </button>
+                                ))}
                             </div>
                           </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
-                          {isGeminiSearchOpen && (
-                            <div className="settings-search-dropdown-menu">
-                              <input
-                                type="text"
-                                className="settings-text-input"
-                                placeholder="Search Gemini models (e.g. 2.5-flash, pro, exp)..."
-                                value={geminiSearchQuery}
-                                onChange={(e) => setGeminiSearchQuery(e.target.value)}
-                                autoFocus
-                              />
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px' }}>
-                                {geminiModelsList
-                                  .filter((m) =>
-                                    m.id.toLowerCase().includes(geminiSearchQuery.toLowerCase()) ||
-                                    (m.name && m.name.toLowerCase().includes(geminiSearchQuery.toLowerCase()))
-                                  )
-                                  .slice(0, 15)
-                                  .map((m) => (
-                                    <div
-                                      key={m.id}
-                                      className={`settings-search-item ${geminiModel === m.id ? 'selected' : ''}`}
-                                      onClick={() => {
-                                        updateGeminiModel(m.id);
-                                        setIsGeminiSearchOpen(false);
-                                      }}
-                                    >
-                                      <div>
-                                        <div style={{ fontWeight: 600 }}>{m.name || m.id}</div>
-                                        <div style={{ fontSize: '10px', color: '#94a3b8' }}>{m.id}</div>
-                                      </div>
-                                      {geminiModel === m.id && <Check size={14} style={{ color: '#c084fc' }} />}
-                                    </div>
-                                  ))}
-                              </div>
-                            </div>
-                          )}
+                {/* TAB 2: AGENT 2 - KNOWLEDGE & RAG */}
+                {settingsTab === 'agent2' && (
+                  <div className="settings-section-card settings-agent-card agent2-active">
+                    <div className="settings-section-title">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Brain size={16} style={{ color: '#c084fc' }} />
+                        <span>Agent 2: Knowledge &amp; RAG</span>
+                      </div>
+                      <span className="agent-badge-pill violet">Multimodal &amp; Grounding</span>
+                    </div>
+                    <p className="settings-help-text">
+                      Powers document synthesis, smart context grounding, offline/online vector search, and web citations.
+                    </p>
+
+                    <div className="settings-input-group">
+                      <label className="settings-label">Knowledge Engine Provider</label>
+                      <div className="settings-provider-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
+                        <div
+                          className={`provider-grid-item ${agent2Provider === 'gemini' ? 'active' : ''}`}
+                          onClick={() => updateAgent2Provider('gemini')}
+                        >
+                          <Brain size={15} style={{ color: '#c084fc' }} />
+                          <span className="provider-grid-item-label">Google Gemini</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${agent2Provider === 'vertex' ? 'active' : ''}`}
+                          onClick={() => updateAgent2Provider('vertex')}
+                        >
+                          <Cloud size={15} style={{ color: '#60a5fa' }} />
+                          <span className="provider-grid-item-label">Vertex AI</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${agent2Provider === 'antigravity' ? 'active' : ''}`}
+                          onClick={() => updateAgent2Provider('antigravity')}
+                        >
+                          <Sparkles size={15} style={{ color: '#38bdf8' }} />
+                          <span className="provider-grid-item-label">Antigravity</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${agent2Provider === 'codex' ? 'active' : ''}`}
+                          onClick={() => updateAgent2Provider('codex')}
+                        >
+                          <Cpu size={15} style={{ color: '#10b981' }} />
+                          <span className="provider-grid-item-label">OpenAI Codex</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${agent2Provider === 'openai' ? 'active' : ''}`}
+                          onClick={() => updateAgent2Provider('openai')}
+                        >
+                          <Sparkles size={15} style={{ color: '#34d399' }} />
+                          <span className="provider-grid-item-label">OpenAI</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${agent2Provider === 'anthropic' ? 'active' : ''}`}
+                          onClick={() => updateAgent2Provider('anthropic')}
+                        >
+                          <Brain size={15} style={{ color: '#f97316' }} />
+                          <span className="provider-grid-item-label">Anthropic</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${agent2Provider === 'custom' ? 'active' : ''}`}
+                          onClick={() => updateAgent2Provider('custom')}
+                        >
+                          <Wrench size={15} style={{ color: '#e2e8f0' }} />
+                          <span className="provider-grid-item-label">Custom API</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${agent2Provider === 'ollama' ? 'active' : ''}`}
+                          onClick={() => updateAgent2Provider('ollama')}
+                        >
+                          <Cpu size={15} style={{ color: '#fbbf24' }} />
+                          <span className="provider-grid-item-label">Ollama (Local)</span>
                         </div>
                       </div>
                     </div>
 
-                    {/* Agent 3: Realtime Voice Intelligence */}
-                    <div className="settings-section-card settings-agent-card">
-                      <div className="settings-section-title">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <Mic size={16} style={{ color: '#4ade80' }} />
-                          <span>Agent 3: Realtime Voice Intelligence</span>
-                        </div>
-                        <span className="agent-badge-pill emerald">Streaming STT + TTS</span>
+                    {/* Model Selector & Search for Agent 2 */}
+                    <div className="settings-input-group">
+                      <div className="settings-input-header">
+                        <label className="settings-label">Knowledge Model</label>
+                        <button
+                          type="button"
+                          className="settings-btn-action settings-btn-secondary"
+                          style={{ padding: '3px 8px', fontSize: '10.5px' }}
+                          onClick={() => void refreshAgent2Models()}
+                          disabled={agent2ModelsLoading}
+                        >
+                          <RefreshCw className={agent2ModelsLoading ? 'spin' : ''} size={11} />
+                          <span>{agent2ModelsLoading ? 'Fetching...' : 'Sync Catalog'}</span>
+                        </button>
                       </div>
-                      <p className="settings-help-text">
-                        Conversational voice streaming with real-time speech-to-text, audio chunking, and speech playback.
-                      </p>
 
+                      <div className="settings-search-container">
+                        <div className="settings-model-selector-row">
+                          <div className="settings-model-info">
+                            <span className="settings-model-name">{agent2Model}</span>
+                            <span className="settings-model-sub">Provider: {agent2Provider.toUpperCase()}</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <button
+                              type="button"
+                              className="settings-btn-action"
+                              onClick={() => setIsAgent2SearchOpen(!isAgent2SearchOpen)}
+                            >
+                              <Search size={12} />
+                              <span>{isAgent2SearchOpen ? 'Close Search' : 'Change Model'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="settings-btn-action settings-btn-secondary"
+                              onClick={() => void handleTestPing(agent2Provider, getProviderKey(agent2Provider), agent2Model, customUrl)}
+                              disabled={pingTesting}
+                            >
+                              ⚡ Ping
+                            </button>
+                          </div>
+                        </div>
+
+                        {isAgent2SearchOpen && (
+                          <div className="settings-search-dropdown-menu">
+                            <input
+                              type="text"
+                              className="settings-text-input"
+                              placeholder={`Search or type custom model for ${agent2Provider}...`}
+                              value={agent2SearchQuery}
+                              onChange={(e) => setAgent2SearchQuery(e.target.value)}
+                              autoFocus
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px', maxHeight: '240px', overflowY: 'auto' }}>
+                              {agent2SearchQuery.trim() && !agent2ModelsList.some((m) => m.id.toLowerCase() === agent2SearchQuery.trim().toLowerCase()) && (
+                                <div
+                                  className="settings-search-item"
+                                  style={{ borderBottom: '1px dashed rgba(255, 255, 255, 0.15)' }}
+                                  onClick={() => {
+                                    updateAgent2Model(agent2SearchQuery.trim());
+                                    setIsAgent2SearchOpen(false);
+                                  }}
+                                >
+                                  <div>
+                                    <div style={{ fontWeight: 600, color: '#38bdf8' }}>Use custom model: "{agent2SearchQuery.trim()}"</div>
+                                    <div style={{ fontSize: '10px', color: '#94a3b8' }}>Click to apply custom model slug</div>
+                                  </div>
+                                  <Plus size={14} style={{ color: '#38bdf8' }} />
+                                </div>
+                              )}
+                              {agent2ModelsList
+                                .filter((m) =>
+                                  m.id.toLowerCase().includes(agent2SearchQuery.toLowerCase()) ||
+                                  (m.name && m.name.toLowerCase().includes(agent2SearchQuery.toLowerCase()))
+                                )
+                                .slice(0, 30)
+                                .map((m) => (
+                                  <div
+                                    key={m.id}
+                                    className={`settings-search-item ${agent2Model === m.id ? 'selected' : ''}`}
+                                    onClick={() => {
+                                      updateAgent2Model(m.id);
+                                      setIsAgent2SearchOpen(false);
+                                    }}
+                                  >
+                                    <div>
+                                      <div style={{ fontWeight: 600 }}>{m.name || m.id}</div>
+                                      <div style={{ fontSize: '10px', color: '#94a3b8' }}>{m.id}</div>
+                                    </div>
+                                    {agent2Model === m.id && <Check size={14} style={{ color: '#c084fc' }} />}
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Web Search Grounding toggle with explanation */}
+                    <div className="settings-section-card" style={{ marginTop: '16px', background: 'rgba(255, 255, 255, 0.03)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <Globe size={18} style={{ color: webSearchEnabled ? '#38bdf8' : '#94a3b8' }} />
+                          <div>
+                            <div style={{ fontSize: '13px', fontWeight: 600, color: '#f1f5f9' }}>Web Search Grounding</div>
+                            <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                              Grounds answers using live Google Search citations and internet intelligence.
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className={`settings-btn-action ${webSearchEnabled ? 'active' : 'settings-btn-secondary'}`}
+                          style={{ padding: '6px 14px', fontSize: '12px', minWidth: '95px' }}
+                          onClick={() => setWebSearchEnabled(!webSearchEnabled)}
+                        >
+                          {webSearchEnabled ? '✓ Enabled' : 'Disabled'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 3: VOICE & AUDIO */}
+                {settingsTab === 'voice' && (
+                  <div className="settings-section-card settings-agent-card">
+                    <div className="settings-section-title">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Mic size={16} style={{ color: '#4ade80' }} />
+                        <span>Voice &amp; Audio Architecture</span>
+                      </div>
+                      <span className="agent-badge-pill emerald">Streaming Voice &amp; STT</span>
+                    </div>
+                    <p className="settings-help-text">
+                      High-fidelity speech transcription, real-time audio chunking, and low-latency speech synthesis.
+                    </p>
+
+                    {/* STT Selection */}
+                    <div className="settings-input-group">
+                      <label className="settings-label">Speech-To-Text (STT) Engine</label>
+                      <div className="settings-provider-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
+                        <div
+                          className={`provider-grid-item ${sttProvider === 'gemini-3.5-transcribe' ? 'active' : ''}`}
+                          onClick={() => updateSttProvider('gemini-3.5-transcribe')}
+                        >
+                          <Sparkles size={15} style={{ color: '#c084fc' }} />
+                          <span className="provider-grid-item-label">Gemini Transcribe</span>
+                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>gemini-3.5-transcribe</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${sttProvider === 'whisper' ? 'active' : ''}`}
+                          onClick={() => updateSttProvider('whisper')}
+                        >
+                          <Cpu size={15} style={{ color: '#10b981' }} />
+                          <span className="provider-grid-item-label">Whisper</span>
+                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>OpenAI / Local</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${sttProvider === 'assemblyai' ? 'active' : ''}`}
+                          onClick={() => updateSttProvider('assemblyai')}
+                        >
+                          <Zap size={15} style={{ color: '#38bdf8' }} />
+                          <span className="provider-grid-item-label">AssemblyAI</span>
+                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Streaming STT</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${sttProvider === 'sarvam' ? 'active' : ''}`}
+                          onClick={() => updateSttProvider('sarvam')}
+                        >
+                          <Volume2 size={15} style={{ color: '#f59e0b' }} />
+                          <span className="provider-grid-item-label">Sarvam AI</span>
+                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Indian Languages</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Conversational Voice Pipeline */}
+                    <div className="settings-input-group">
+                      <label className="settings-label">Bidirectional Conversational Streaming</label>
                       <div className="settings-provider-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
                         <div
                           className={`provider-grid-item ${voiceProvider === 'assemblyai' ? 'active' : ''}`}
@@ -3941,12 +4273,139 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                         </div>
                       </div>
                     </div>
-                  </>
+
+                    {/* Audio Playback Test Button */}
+                    <div className="settings-section-card" style={{ marginTop: '14px', background: 'rgba(255, 255, 255, 0.03)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div>
+                          <div style={{ fontSize: '12.5px', fontWeight: 600, color: '#f1f5f9' }}>Speaker Output Diagnostic</div>
+                          <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                            Plays a verification sound chime through your active speakers.
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="settings-btn-action"
+                          style={{ padding: '6px 14px', fontSize: '12px' }}
+                          onClick={handleTestAudioPlayback}
+                        >
+                          🔊 Test Audio Playback
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 )}
 
-                {/* TAB 2: KEYS & APIS */}
+                {/* TAB 4: KEYS & CREDENTIALS */}
                 {settingsTab === 'keys' && (
                   <>
+                    {/* Antigravity OAuth Card */}
+                    <div className="settings-section-card settings-key-card">
+                      <div className="settings-input-header">
+                        <label className="settings-label">
+                          <Sparkles size={14} style={{ color: '#38bdf8' }} />
+                          <span>Google Antigravity Code Assist OAuth</span>
+                          {antigravityOAuth.connected ? (
+                            <span className="key-badge-configured">
+                              <Check size={10} /> Connected {antigravityOAuth.email ? `(${antigravityOAuth.email})` : ''}
+                            </span>
+                          ) : (
+                            <span className="key-badge-unconfigured">Not connected</span>
+                          )}
+                        </label>
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="settings-btn-action"
+                            style={{ padding: '2px 8px', fontSize: '10px' }}
+                            onClick={() => void handleTestPing('antigravity', '', agent1Model)}
+                            disabled={pingTesting || !antigravityOAuth.connected}
+                          >
+                            Test ⚡
+                          </button>
+                          {antigravityOAuth.connected && (
+                            <button
+                              type="button"
+                              className="key-btn-clear"
+                              onClick={() => void handleOAuthSignOut('antigravity')}
+                              disabled={oauthLoading['antigravity']}
+                            >
+                              Sign Out
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="settings-help-text">
+                        Authenticates directly with Google Cloud via local loopback on port 51121 for Code Assist and Antigravity models.
+                      </p>
+                      {!antigravityOAuth.connected && (
+                        <button
+                          type="button"
+                          className="settings-btn-action"
+                          style={{ alignSelf: 'flex-start', marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                          onClick={() => void handleOAuthLogin('antigravity')}
+                          disabled={oauthLoading['antigravity']}
+                        >
+                          {oauthLoading['antigravity'] ? <Loader2 className="spin" size={12} /> : <Sparkles size={12} />}
+                          <span>{oauthLoading['antigravity'] ? 'Authenticating in browser...' : 'Sign In with Google'}</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Codex OAuth Card */}
+                    <div className="settings-section-card settings-key-card">
+                      <div className="settings-input-header">
+                        <label className="settings-label">
+                          <Cpu size={14} style={{ color: '#10b981' }} />
+                          <span>OpenAI Codex OAuth (ChatGPT Desktop)</span>
+                          {codexOAuth.connected ? (
+                            <span className="key-badge-configured">
+                              <Check size={10} /> Connected
+                            </span>
+                          ) : (
+                            <span className="key-badge-unconfigured">Not connected</span>
+                          )}
+                        </label>
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="settings-btn-action"
+                            style={{ padding: '2px 8px', fontSize: '10px' }}
+                            onClick={() => void handleTestPing('codex', '', 'gpt-5.5')}
+                            disabled={pingTesting || !codexOAuth.connected}
+                          >
+                            Test ⚡
+                          </button>
+                          {codexOAuth.connected && (
+                            <button
+                              type="button"
+                              className="key-btn-clear"
+                              onClick={() => void handleOAuthSignOut('codex')}
+                              disabled={oauthLoading['codex']}
+                            >
+                              Sign Out
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="settings-help-text">
+                        Authenticates directly with OpenAI Codex via local loopback on port 1455 for desktop completions.
+                      </p>
+                      {!codexOAuth.connected && (
+                        <button
+                          type="button"
+                          className="settings-btn-action"
+                          style={{ alignSelf: 'flex-start', marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                          onClick={() => void handleOAuthLogin('codex')}
+                          disabled={oauthLoading['codex']}
+                        >
+                          {oauthLoading['codex'] ? <Loader2 className="spin" size={12} /> : <Cpu size={12} />}
+                          <span>{oauthLoading['codex'] ? 'Authenticating in browser...' : 'Sign In with OpenAI'}</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Google Gemini */}
                     <MaskedKeyInput
                       label="Google Gemini API Key"
                       envName="GEMINI_API_KEY"
@@ -3962,16 +4421,68 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                       testDisabled={pingTesting}
                     />
 
-                    <MaskedKeyInput
-                      label="Google Cloud Vertex Project ID"
-                      envName="VERTEX_PROJECT_ID"
-                      icon={<Cloud size={14} style={{ color: '#60a5fa' }} />}
-                      isConfigured={Boolean(vertexProjectId && vertexProjectId.trim())}
-                      onSave={(val) => updateVertexProjectId(val)}
-                      onClear={() => updateVertexProjectId('')}
-                      description="Project ID for Google Cloud Vertex AI enterprise model calls."
-                    />
+                    {/* Google Cloud Vertex AI (Project ID + Location, NO JSON file) */}
+                    <div className="settings-section-card settings-key-card">
+                      <div className="settings-input-header">
+                        <label className="settings-label">
+                          <Cloud size={14} style={{ color: '#60a5fa' }} />
+                          <span>Google Cloud Vertex AI</span>
+                          {Boolean(vertexProjectId && vertexProjectId.trim()) ? (
+                            <span className="key-badge-configured">
+                              <Check size={10} /> Configured
+                            </span>
+                          ) : (
+                            <span className="key-badge-unconfigured">Not set</span>
+                          )}
+                        </label>
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="settings-btn-action"
+                            style={{ padding: '2px 8px', fontSize: '10px' }}
+                            onClick={() => void handleTestPing('vertex', geminiApiKey, agent1Model, undefined, vertexProjectId)}
+                            disabled={pingTesting || !vertexProjectId.trim()}
+                          >
+                            Test ⚡
+                          </button>
+                          {Boolean(vertexProjectId && vertexProjectId.trim()) && (
+                            <button
+                              type="button"
+                              className="key-btn-clear"
+                              onClick={() => updateVertexProjectId('')}
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
+                        <input
+                          type="text"
+                          className="settings-text-input"
+                          placeholder="Project ID (e.g. rising-fact-p41fc)..."
+                          value={vertexProjectId}
+                          onChange={(e) => updateVertexProjectId(e.target.value)}
+                          style={{ flex: 2 }}
+                        />
+                        <select
+                          className="settings-text-input"
+                          value={vertexLocation}
+                          onChange={(e) => updateVertexLocation(e.target.value)}
+                          style={{ flex: 1, padding: '7px 10px', background: 'rgba(255, 255, 255, 0.05)', color: '#fff', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: '6px' }}
+                        >
+                          <option value="global" style={{ background: '#1e293b' }}>global</option>
+                          <option value="us-central1" style={{ background: '#1e293b' }}>us-central1</option>
+                          <option value="europe-west2" style={{ background: '#1e293b' }}>europe-west2</option>
+                          <option value="asia-northeast1" style={{ background: '#1e293b' }}>asia-northeast1</option>
+                        </select>
+                      </div>
+                      <p className="settings-help-text">
+                        Project ID for Google Cloud Vertex AI enterprise model routing. No JSON service account file required.
+                      </p>
+                    </div>
 
+                    {/* OpenAI */}
                     <MaskedKeyInput
                       label="OpenAI API Key"
                       envName="OPENAI_API_KEY"
@@ -3979,11 +4490,12 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                       isConfigured={Boolean(openaiApiKey && openaiApiKey.trim())}
                       onSave={(val) => updateOpenaiApiKey(val)}
                       onClear={() => updateOpenaiApiKey('')}
-                      description="Enables OpenAI Codex and GPT reasoning models."
+                      description="Enables OpenAI GPT and reasoning model completions."
                       testAction={() => void handleTestPing('openai', openaiApiKey, 'gpt-4o-mini')}
                       testDisabled={pingTesting}
                     />
 
+                    {/* Anthropic */}
                     <MaskedKeyInput
                       label="Anthropic Claude API Key"
                       envName="ANTHROPIC_API_KEY"
@@ -3996,78 +4508,43 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                       testDisabled={pingTesting}
                     />
 
-                    <MaskedKeyInput
-                      label="Groq API Key"
-                      envName="GROQ_API_KEY"
-                      icon={<Zap size={14} style={{ color: '#ff5a36' }} />}
-                      isConfigured={Boolean(groqApiKey && groqApiKey.trim())}
-                      onSave={(val) => void updateGroqApiKey(val)}
-                      onClear={() => {
-                        void updateGroqApiKey('');
-                        localStorage.removeItem('blinky_groq_api_key');
-                      }}
-                      description="Powers ultra-fast token generation for computer-use and screen actuation."
-                      testAction={() => handleTestPing('groq', groqApiKey, agent1Model)}
-                      testDisabled={pingTesting}
-                    />
-
-                    <MaskedKeyInput
-                      label="DeepSeek API Key"
-                      envName="DEEPSEEK_API_KEY"
-                      icon={<Brain size={14} style={{ color: '#38bdf8' }} />}
-                      isConfigured={Boolean(deepseekApiKey && deepseekApiKey.trim())}
-                      onSave={(val) => void updateDeepseekApiKey(val)}
-                      onClear={() => {
-                        void updateDeepseekApiKey('');
-                        localStorage.removeItem('blinky_deepseek_api_key');
-                      }}
-                      description="Powers deep reasoning actuator routines."
-                      testAction={() => handleTestPing('deepseek', deepseekApiKey, 'deepseek-chat')}
-                      testDisabled={pingTesting}
-                    />
-
+                    {/* Ollama */}
                     <div className="settings-section-card settings-key-card">
                       <div className="settings-input-header">
                         <label className="settings-label">
-                          <Mic size={14} style={{ color: '#4ade80' }} />
-                          <span>AssemblyAI API Key (Agent 3 Voice)</span>
+                          <Cpu size={14} style={{ color: '#fbbf24' }} />
+                          <span>Ollama Host URL</span>
+                          <span className="key-badge-configured">
+                            <Check size={10} /> Active
+                          </span>
                         </label>
+                        <button
+                          type="button"
+                          className="settings-btn-action"
+                          style={{ padding: '2px 8px', fontSize: '10px' }}
+                          onClick={() => void handleTestPing('ollama', '', 'qwen2.5:7b', customUrl || 'http://localhost:11434')}
+                          disabled={pingTesting}
+                        >
+                          Test ⚡
+                        </button>
                       </div>
                       <input
-                        type="password"
+                        type="text"
                         className="settings-text-input"
-                        placeholder="AssemblyAI Token..."
-                        value={assemblyaiApiKey}
-                        onChange={(e) => updateAssemblyaiApiKey(e.target.value)}
+                        placeholder="http://localhost:11434"
+                        value={customUrl}
+                        onChange={(e) => updateCustomUrl(e.target.value)}
                       />
                       <p className="settings-help-text">
-                        Enables bidirectional streaming voice conversations.
+                        Host endpoint URL for local Ollama models (e.g. http://localhost:11434).
                       </p>
                     </div>
 
-                    <div className="settings-section-card settings-key-card">
-                      <div className="settings-input-header">
-                        <label className="settings-label">
-                          <Volume2 size={14} style={{ color: '#f59e0b' }} />
-                          <span>Sarvam AI API Key</span>
-                        </label>
-                      </div>
-                      <input
-                        type="password"
-                        className="settings-text-input"
-                        placeholder="Sarvam API Token..."
-                        value={sarvamApiKey}
-                        onChange={(e) => updateSarvamApiKey(e.target.value)}
-                      />
-                      <p className="settings-help-text">
-                        Powers multilingual Indian voice synthesis and transcription.
-                      </p>
-                    </div>
-
+                    {/* Custom API */}
                     <div className="settings-section-card settings-key-card">
                       <label className="settings-label">
                         <Wrench size={14} style={{ color: '#e2e8f0' }} />
-                        <span>Custom OpenAI-Compatible Endpoint</span>
+                        <span>Custom API (OpenAI-Compatible)</span>
                       </label>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         <input
@@ -4078,18 +4555,18 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                           onChange={(e) => updateCustomUrl(e.target.value)}
                         />
                         <input
-                          type="text"
-                          className="settings-text-input"
-                          placeholder="Model Identifier (e.g. llama3.2)"
-                          value={customModel}
-                          onChange={(e) => updateCustomModel(e.target.value)}
-                        />
-                        <input
                           type="password"
                           className="settings-text-input"
-                          placeholder="API Key (optional for local Ollama)"
+                          placeholder="API Key (optional for local endpoints)"
                           value={customApiKey}
                           onChange={(e) => updateCustomApiKey(e.target.value)}
+                        />
+                        <input
+                          type="text"
+                          className="settings-text-input"
+                          placeholder="Model Identifier (e.g. deepseek-chat, mistral-large)"
+                          value={customModel}
+                          onChange={(e) => updateCustomModel(e.target.value)}
                         />
                       </div>
                     </div>
@@ -4190,8 +4667,8 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                   </div>
                 )}
 
-                {/* TAB 4: SHORTCUTS */}
-                {settingsTab === 'shortcuts' && (
+                {/* TAB 6: KEYBINDINGS & SYSTEM */}
+                {settingsTab === 'about' && (
                   <>
                     <div className="settings-section-card">
                       <div className="settings-section-title">
@@ -4256,44 +4733,41 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                         <span className="agent-badge-pill" style={{ background: 'rgba(255, 255, 255, 0.1)', color: '#cbd5e1' }}>Esc</span>
                       </div>
                     </div>
+
+                    <div className="settings-section-card settings-about-hero">
+                      <div className="settings-about-logo">
+                        <Bot size={28} />
+                      </div>
+                      <div>
+                        <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff', fontFamily: 'Astonpoliz, Okine Sans, sans-serif' }}>
+                          Clinky Desktop
+                        </h3>
+                        <span className="agent-badge-pill ember">v0.2.0</span>
+                      </div>
+                      <p style={{ margin: '4px 0 0 0', fontSize: '11.5px', color: '#94a3b8', maxWidth: '380px' }}>
+                        The Windows AI Buddy. Unified multi-agent intelligence with local computer-use actuation and streaming voice.
+                      </p>
+
+                      <div className="settings-about-grid">
+                        <div className="settings-about-stat">
+                          <span className="settings-about-stat-label">UI Design System</span>
+                          <span className="settings-about-stat-val">Ember &amp; Deep Space</span>
+                        </div>
+                        <div className="settings-about-stat">
+                          <span className="settings-about-stat-label">Actuator Engine</span>
+                          <span className="settings-about-stat-val">{provider.toUpperCase()} ({agent1Model})</span>
+                        </div>
+                        <div className="settings-about-stat">
+                          <span className="settings-about-stat-label">Knowledge Engine</span>
+                          <span className="settings-about-stat-val">{agent2Provider.toUpperCase()} ({agent2Model})</span>
+                        </div>
+                        <div className="settings-about-stat">
+                          <span className="settings-about-stat-label">Voice Pipeline</span>
+                          <span className="settings-about-stat-val">{voiceProvider === 'assemblyai' ? 'AssemblyAI Realtime' : 'Sarvam Multilingual'}</span>
+                        </div>
+                      </div>
+                    </div>
                   </>
-                )}
-
-                {/* TAB 5: ABOUT */}
-                {settingsTab === 'about' && (
-                  <div className="settings-section-card settings-about-hero">
-                    <div className="settings-about-logo">
-                      <Bot size={28} />
-                    </div>
-                    <div>
-                      <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff', fontFamily: 'Astonpoliz, Okine Sans, sans-serif' }}>
-                        Clinky Desktop
-                      </h3>
-                      <span className="agent-badge-pill ember">v0.2.0</span>
-                    </div>
-                    <p style={{ margin: '4px 0 0 0', fontSize: '11.5px', color: '#94a3b8', maxWidth: '380px' }}>
-                      The Windows AI Buddy. Unified multi-agent intelligence with local computer-use actuation and streaming voice.
-                    </p>
-
-                    <div className="settings-about-grid">
-                      <div className="settings-about-stat">
-                        <span className="settings-about-stat-label">UI Design System</span>
-                        <span className="settings-about-stat-val">Ember &amp; Deep Space</span>
-                      </div>
-                      <div className="settings-about-stat">
-                        <span className="settings-about-stat-label">Actuator Engine</span>
-                        <span className="settings-about-stat-val">{provider.toUpperCase()} ({agent1Model})</span>
-                      </div>
-                      <div className="settings-about-stat">
-                        <span className="settings-about-stat-label">Knowledge Engine</span>
-                        <span className="settings-about-stat-val">Gemini ({geminiModel})</span>
-                      </div>
-                      <div className="settings-about-stat">
-                        <span className="settings-about-stat-label">Voice Pipeline</span>
-                        <span className="settings-about-stat-val">{voiceProvider === 'assemblyai' ? 'AssemblyAI Realtime' : 'Sarvam Multilingual'}</span>
-                      </div>
-                    </div>
-                  </div>
                 )}
               </div>
             </div>

@@ -324,6 +324,7 @@ dependencies = [
  "getrandom 0.3.4",
  "http",
  "rcgen",
+ "reqwest 0.12.28",
  "rustls",
  "rustls-pemfile",
  "serde",
@@ -336,6 +337,8 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "urlencoding",
+ "uuid",
  "windows-sys 0.59.0",
 ]
 

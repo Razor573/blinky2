@@ -102,14 +102,13 @@ def _load_image(image_input: str | Path | bytes | Image.Image) -> tuple[bytes, s
 
 
 def _try_groq_vision(prompt: str, img_bytes: bytes) -> dict[str, Any] | None:
-    """Attempt Groq Vision as primary fast-path (works without Gemini API access)."""
+    """Attempt Groq Vision as fast-path."""
     try:
         groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
         if not groq_api_key:
             return None
         from ai.groq_client import ask_groq_vision
 
-        # Groq Vision expects a file path, so write bytes to a temp file
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
             f.write(img_bytes)
             tmp_path = Path(f.name)
@@ -128,7 +127,7 @@ def _try_groq_vision(prompt: str, img_bytes: bytes) -> dict[str, Any] | None:
 
 
 def _try_gemini_vision(prompt: str, img_bytes: bytes, mime_type: str) -> dict[str, Any] | None:
-    """Attempt Gemini Vision as secondary fallback."""
+    """Attempt Gemini Vision."""
     try:
         from google.genai import types
         client = _get_gemini_client()
@@ -162,21 +161,25 @@ def ask_gemini_vision(
 ) -> dict[str, Any]:
     """
     Analyzes an image with the best available vision model.
-    Priority order:
-      1. Groq Vision (fast, reliable, works without Google API access)
-      2. Gemini Vision (fallback if Groq is unavailable or fails)
+    Honors configured provider (e.g. Gemini vs Groq).
     """
     img_bytes, mime_type = _load_image(image_input)
+    configured_provider = (os.getenv("BLINKY_PROVIDER") or os.getenv("AI_PROVIDER") or "gemini").strip().lower()
 
-    # 1. Try Groq Vision first (fast, reliable, no Google API needed)
-    result = _try_groq_vision(prompt, img_bytes)
-    if result:
-        return result
-
-    # 2. Try Gemini Vision
-    result = _try_gemini_vision(prompt, img_bytes, mime_type)
-    if result:
-        return result
+    if configured_provider in ("gemini", "google", "vertex", "antigravity"):
+        result = _try_gemini_vision(prompt, img_bytes, mime_type)
+        if result:
+            return result
+        result = _try_groq_vision(prompt, img_bytes)
+        if result:
+            return result
+    else:
+        result = _try_groq_vision(prompt, img_bytes)
+        if result:
+            return result
+        result = _try_gemini_vision(prompt, img_bytes, mime_type)
+        if result:
+            return result
 
     raise RuntimeError(
         "Vision analysis failed: neither Groq Vision nor Gemini Vision could process the image. "
@@ -187,21 +190,44 @@ def ask_gemini_vision(
 def ask_gemini_text(
     prompt: str,
     max_tokens: int = 1000,
+    web_search: bool = False,
 ) -> dict[str, Any]:
-    """Queries Gemini text model with model fallback."""
+    """Queries Gemini text model with model fallback, supporting Google Search Grounding when web_search=True."""
     try:
         from google.genai import types
         client = _get_gemini_client()
         if client is None:
             raise RuntimeError("Gemini client not available. Set GEMINI_API_KEY in .env.")
+
+        config = types.GenerateContentConfig(
+            max_output_tokens=max_tokens,
+            tools=[types.Tool(google_search=types.GoogleSearch())] if web_search else None,
+        )
+
         for model_name in _get_candidate_models():
             try:
                 resp = client.models.generate_content(
                     model=model_name,
                     contents=prompt,
+                    config=config,
                 )
                 text = (resp.text or "").strip()
-                return {"text": text, "model": model_name}
+
+                sources: list[dict[str, str]] = []
+                if hasattr(resp, "candidates") and resp.candidates:
+                    candidate = resp.candidates[0]
+                    gm = getattr(candidate, "grounding_metadata", None)
+                    if gm:
+                        chunks = getattr(gm, "grounding_chunks", None) or []
+                        for ch in chunks:
+                            web = getattr(ch, "web", None)
+                            if web:
+                                sources.append({
+                                    "title": str(getattr(web, "title", "") or ""),
+                                    "url": str(getattr(web, "uri", "") or ""),
+                                })
+
+                return {"text": text, "model": model_name, "sources": sources}
             except Exception as e:
                 LOGGER.warning("Gemini text model %s failed: %s", model_name, str(e)[:120])
                 continue

@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
+
 export interface DynamicModelItem {
   id: string;
   name: string;
@@ -97,127 +99,19 @@ export async function fetchDynamicModels(
   const prov = (provider || 'gemini').toLowerCase().trim();
   const fallback = getCuratedCatalog(prov);
 
-  // 1. Google Gemini Live Fetch
-  if (prov === 'gemini' || prov === 'google') {
-    if (!apiKey?.trim()) {
-      return { models: fallback, isLive: false };
+  try {
+    const fetched = await invoke<DynamicModelItem[]>('fetch_provider_models', {
+      provider: prov,
+      apiKey: apiKey?.trim() || null,
+      customUrl: customUrl?.trim() || null,
+    });
+    if (Array.isArray(fetched) && fetched.length > 0) {
+      return { models: fetched, isLive: true };
     }
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey.trim())}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        return { models: fallback, error: `Google API error ${res.status}`, isLive: false };
-      }
-      const data = await res.json();
-      const rawList = Array.isArray(data.models) ? data.models : [];
-      const filtered: DynamicModelItem[] = rawList
-        .filter((m: any) => {
-          const methods = m.supportedGenerationMethods || [];
-          return methods.includes('generateContent');
-        })
-        .map((m: any) => {
-          const cleanId = (m.name || '').replace(/^models\//, '');
-          const isFlash = cleanId.toLowerCase().includes('flash');
-          const isPro = cleanId.toLowerCase().includes('pro');
-          return {
-            id: cleanId,
-            name: m.displayName || cleanId,
-            desc: m.description ? m.description.slice(0, 85) + '...' : 'Google Gemini model',
-            badge: isFlash ? 'Flash' : isPro ? 'Pro' : 'Gemini',
-            tier: isPro ? 'smart' : 'fast',
-          };
-        });
-
-      if (filtered.length > 0) {
-        return { models: filtered, isLive: true };
-      }
-    } catch (err: any) {
-      return { models: fallback, error: err?.message, isLive: false };
-    }
-    return { models: fallback, isLive: false };
+  } catch (err: any) {
+    console.warn(`[modelCatalog] Native fetch_provider_models failed for ${prov}, falling back to Cue catalog:`, err);
+    return { models: fallback, error: String(err?.message || err), isLive: false };
   }
 
-  // 2. OpenAI Live Fetch
-  if (prov === 'openai') {
-    if (!apiKey?.trim()) {
-      return { models: fallback, isLive: false };
-    }
-    try {
-      const res = await fetch('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${apiKey.trim()}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const rawList = Array.isArray(data.data) ? data.data : [];
-        const liveModels: DynamicModelItem[] = rawList
-          .filter((m: any) => {
-            const id = (m.id || '').toLowerCase();
-            return (id.startsWith('gpt-') || id.startsWith('o1') || id.startsWith('o3')) && !id.includes('realtime') && !id.includes('audio');
-          })
-          .map((m: any) => ({
-            id: m.id,
-            name: m.id,
-            desc: `OpenAI model (${m.owned_by || 'system'})`,
-            badge: m.id.includes('mini') || m.id.includes('nano') ? 'Fast' : 'Smart',
-            tier: m.id.includes('mini') || m.id.includes('nano') ? 'fast' : 'smart',
-          }));
-        if (liveModels.length > 0) {
-          liveModels.sort((a, b) => a.id.localeCompare(b.id));
-          return { models: liveModels, isLive: true };
-        }
-      }
-    } catch (err: any) {
-      return { models: fallback, error: err?.message, isLive: false };
-    }
-    return { models: fallback, isLive: false };
-  }
-
-  // 3. Ollama (local endpoint)
-  if (prov === 'ollama') {
-    const base = (customUrl || 'http://localhost:11434').replace(/\/+$/, '');
-    try {
-      const res = await fetch(`${base}/api/tags`);
-      if (res.ok) {
-        const data = await res.json();
-        const rawList = Array.isArray(data.models) ? data.models : [];
-        const models: DynamicModelItem[] = rawList.map((m: any) => ({
-          id: m.name || m.model,
-          name: m.name || m.model,
-          desc: `Local Ollama model (${Math.round((m.size || 0) / (1024 * 1024))} MB)`,
-          badge: 'Local',
-          tier: 'fast',
-        }));
-        if (models.length > 0) return { models, isLive: true };
-      }
-    } catch {}
-    return { models: fallback, isLive: false };
-  }
-
-  // 4. Custom OpenAI-compatible endpoint
-  if (prov === 'custom') {
-    const base = (customUrl || '').replace(/\/+$/, '');
-    if (base) {
-      try {
-        const url = base.endsWith('/models') ? base : `${base}/models`;
-        const headers: Record<string, string> = {};
-        if (apiKey?.trim()) headers['Authorization'] = `Bearer ${apiKey.trim()}`;
-        const res = await fetch(url, { headers });
-        if (res.ok) {
-          const data = await res.json();
-          const rawList = Array.isArray(data.data) ? data.data : [];
-          const models: DynamicModelItem[] = rawList.map((m: any) => ({
-            id: m.id,
-            name: m.id,
-            desc: 'Custom OpenAI-compatible model',
-            badge: 'Custom',
-          }));
-          if (models.length > 0) return { models, isLive: true };
-        }
-      } catch {}
-    }
-    return { models: fallback, isLive: false };
-  }
-
-  // 5. Curated for Vertex, Antigravity, Codex, Anthropic, Groq
   return { models: fallback, isLive: false };
 }

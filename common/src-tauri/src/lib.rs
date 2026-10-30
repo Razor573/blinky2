@@ -1,8 +1,14 @@
 pub(crate) mod platform;
+pub mod ai_commands;
 mod file_transfer;
 mod tls_identity;
 mod transport;
 mod websocket;
+
+pub use ai_commands::{
+    fetch_provider_models, get_oauth_status, ping_ai_model, sign_out_oauth,
+    start_antigravity_login, start_codex_login, ModelOption, OAuthSession, OAuthStatus, PingResult,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1412,7 +1418,13 @@ pub fn run() {
             set_agent_cursor_visibility,
             get_cursor_position,
             open_notebook_window,
-            close_notebook_window
+            close_notebook_window,
+            ping_ai_model,
+            fetch_provider_models,
+            start_antigravity_login,
+            start_codex_login,
+            get_oauth_status,
+            sign_out_oauth
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
