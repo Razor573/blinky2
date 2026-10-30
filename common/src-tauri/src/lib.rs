@@ -1413,6 +1413,17 @@ fn open_logs_folder(app: AppHandle) -> Result<(), String> {
     open_folder(log_dir.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn clear_application_logs(app: AppHandle) -> Result<bool, String> {
+    let root = project_root(&app)?;
+    let log_file = root.join("tmp").join("logs").join("blinky.log");
+    if let Some(parent) = log_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&log_file, "").map_err(|e| format!("Failed to clear logs: {e}"))?;
+    Ok(true)
+}
+
 pub fn run() {
     #[cfg(target_os = "windows")]
     if !acquire_single_instance() {
@@ -1463,7 +1474,8 @@ pub fn run() {
             sign_out_oauth,
             transcribe_audio_native,
             get_application_logs,
-            open_logs_folder
+            open_logs_folder,
+            clear_application_logs
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

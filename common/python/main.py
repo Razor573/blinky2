@@ -307,6 +307,13 @@ def run(
     question = question.strip()
     question = re.sub(r"^(?:hey\s+)?blinky[\s,.:;!?]*", "", question, flags=re.IGNORECASE).strip()
 
+    # Strip conversational agent prefixes before running preflight or tool matching
+    for pat in [
+        r"^(?:can\s+you\s+)?(?:please\s+)?(?:take\s+over\s+(?:the|my)\s+screen\s+and|take\s+over\s+and|control\s+(?:the|my)\s+screen\s+and|use\s+agent\s+mode\s+to|start\s+agent\s+mode\s+and|switch\s+to\s+agent\s+mode\s+and)\s*",
+        r"^(?:can\s+you\s+)?(?:please\s+)?(?:i\s+want\s+you\s+to\s+)?(?:help\s+me\s+to\s+)?(?:go\s+ahead\s+and\s+)?",
+    ]:
+        question = re.sub(pat, "", question, flags=re.IGNORECASE).strip()
+
     # Fast-path: attached mobile image explain (Gemini/Groq vision).
     # Must run before any screen capture so a phone photo is described
     # instead of being treated as a file transfer.

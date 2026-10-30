@@ -593,6 +593,15 @@ export function CommandBar() {
     }
   };
 
+  const handleClearLogs = async () => {
+    try {
+      await invoke('clear_application_logs');
+      setAppLogsContent('');
+    } catch (e: any) {
+      console.error('Failed to clear logs:', e);
+    }
+  };
+
   const [vertexServiceAccountJson, setVertexServiceAccountJson] = useState<string>(() => {
     return localStorage.getItem('clinky_vertex_service_account_json') || '';
   });
@@ -997,11 +1006,35 @@ export function CommandBar() {
         if (s.custom_api_key) setCustomApiKey(s.custom_api_key);
 
         const prov = s.provider || 'gemini';
-        if (s.gemini_api_key) setGeminiApiKey(s.gemini_api_key);
-        if (s.openai_api_key) setOpenaiApiKey(s.openai_api_key);
-        if (s.anthropic_api_key) setAnthropicApiKey(s.anthropic_api_key);
-        if (s.vertex_project_id) setVertexProjectId(s.vertex_project_id);
-        if (s.model_name) setAgent1Model(s.model_name);
+        if (s.gemini_api_key) {
+          setGeminiApiKey(s.gemini_api_key);
+          localStorage.setItem('blinky_gemini_api_key', s.gemini_api_key);
+        }
+        if (s.openai_api_key) {
+          setOpenaiApiKey(s.openai_api_key);
+          localStorage.setItem('clinky_openai_api_key', s.openai_api_key);
+        }
+        if (s.anthropic_api_key) {
+          setAnthropicApiKey(s.anthropic_api_key);
+          localStorage.setItem('clinky_anthropic_api_key', s.anthropic_api_key);
+        }
+        if (s.vertex_project_id) {
+          setVertexProjectId(s.vertex_project_id);
+          localStorage.setItem('clinky_vertex_project_id', s.vertex_project_id);
+        }
+        if (s.assemblyai_api_key) {
+          setAssemblyaiApiKey(s.assemblyai_api_key);
+          assemblyaiApiKeyRef.current = s.assemblyai_api_key;
+        }
+        if (s.voice_provider === 'sarvam' || s.voice_provider === 'assemblyai') {
+          setVoiceProvider(s.voice_provider);
+          voiceProviderRef.current = s.voice_provider;
+          localStorage.setItem('blinky_voice_provider', s.voice_provider);
+        }
+        if (s.model_name) {
+          setAgent1Model(s.model_name);
+          localStorage.setItem('blinky_agent1_model', s.model_name);
+        }
         void refreshAgent1Models(prov);
         void refreshGeminiModels(s.gemini_api_key || geminiApiKey);
       } catch (err) {
@@ -1733,7 +1766,7 @@ export function CommandBar() {
       void executeTutor(transcribedText, true);
     } else {
       if (!hasGemini && !hasOpenAI && !hasAssemblyAI && !hasSarvam && !hasGroq) {
-        setStatus('Please set your Gemini, OpenAI, AssemblyAI, or Sarvam API Key in settings first.');
+        setStatus('Please configure your Gemini, OpenAI, AssemblyAI, or Sarvam API Key in Settings to enable voice transcription.');
       } else {
         setStatus('Could not hear anything clearly. Please check your mic and try again.');
       }
@@ -1750,11 +1783,14 @@ export function CommandBar() {
     let key = sarvamApiKey || sarvamApiKeyRef.current;
     let gKey = groqApiKey || (import.meta as any).env?.VITE_GROQ_API_KEY || '';
 
-    // Ensure we check ANY configured key: Gemini, OpenAI, Antigravity OAuth, AssemblyAI, Sarvam, Groq
+    // Ensure we check ANY configured key: Gemini, OpenAI, Vertex, Antigravity OAuth, Codex OAuth, AssemblyAI, Sarvam, Groq, Ollama
     let anyKeyPresent =
       Boolean(geminiApiKey && geminiApiKey.trim()) ||
       Boolean(openaiApiKey && openaiApiKey.trim()) ||
+      Boolean(vertexProjectId && vertexProjectId.trim()) ||
       antigravityOAuth.connected ||
+      codexOAuth.connected ||
+      provider === 'ollama' ||
       Boolean(aaiKey && aaiKey.trim()) ||
       Boolean(key && key.trim()) ||
       Boolean(gKey && gKey.trim()) ||
@@ -1770,6 +1806,13 @@ export function CommandBar() {
         }
         if (s.openai_api_key) {
           setOpenaiApiKey(s.openai_api_key);
+          anyKeyPresent = true;
+        }
+        if (s.vertex_project_id) {
+          setVertexProjectId(s.vertex_project_id);
+          anyKeyPresent = true;
+        }
+        if (s.provider === 'ollama') {
           anyKeyPresent = true;
         }
         if (s.assemblyai_api_key) {
@@ -1793,7 +1836,7 @@ export function CommandBar() {
     }
 
     if (!anyKeyPresent) {
-      setStatus('Please set your Gemini, OpenAI, AssemblyAI, or Sarvam API Key in settings first.');
+      setStatus('Please configure your Gemini, OpenAI, AssemblyAI, or Sarvam API Key in Settings to enable voice transcription.');
       isStartingRecordingRef.current = false;
       return;
     }
@@ -5168,6 +5211,14 @@ export function CommandBar() {
                           type="button"
                           className="settings-btn-action settings-btn-secondary"
                           style={{ padding: '6px 14px', fontSize: '12px' }}
+                          onClick={() => void handleClearLogs()}
+                        >
+                          🧹 Clear Logs
+                        </button>
+                        <button
+                          type="button"
+                          className="settings-btn-action settings-btn-secondary"
+                          style={{ padding: '6px 14px', fontSize: '12px' }}
                           onClick={() => void handleOpenLogsFolder()}
                         >
                           📂 Open Logs Folder
@@ -5279,6 +5330,14 @@ export function CommandBar() {
                 >
                   <RefreshCw size={11} className={loadingLogs ? 'spin' : ''} />
                   <span>Refresh</span>
+                </button>
+                <button
+                  type="button"
+                  className="settings-btn-action settings-btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '11px' }}
+                  onClick={() => void handleClearLogs()}
+                >
+                  Clear Logs
                 </button>
                 <button
                   type="button"

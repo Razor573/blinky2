@@ -173,7 +173,7 @@ async def execute_script(filepath, args_json, timeout=30):
         return False, "SPAWN_ERROR", str(e)
 
 def stream_synthesis_llm(query, tool_output, callback):
-    provider = (os.getenv("BLINKY_AI_PROVIDER", "ollama").strip() or "ollama").lower()
+    provider = (os.getenv("BLINKY_AI_PROVIDER", "gemini").strip() or "gemini").lower()
     
     prompt = f"""
 You are Blinky, a helpful AI assistant.
@@ -185,14 +185,13 @@ We executed a web browser automation search and gathered this raw data:
 Synthesize a professional, user-friendly final response answering the user's request. Avoid mentioning system internal details (like "Playwright script output"). Give direct details.
 """
 
-    if provider == "groq":
+    if provider == "groq" and os.getenv("GROQ_API_KEY"):
         api_key = os.getenv("GROQ_API_KEY", "").strip()
         model = os.getenv("BLINKY_GROQ_MODEL", "qwen/qwen3.8-27b").strip() or "qwen/qwen3.8-27b"
         if model in ("llama-3.3-70b-versatile", "llama-3.2-90b-vision-preview", "llama-3.2-11b-vision-preview", "meta-llama/llama-4-scout-17b-16e-instruct"):
             model = "qwen/qwen3.8-27b"
         groq_url = os.getenv("BLINKY_GROQ_URL", "https://api.groq.com/openai/v1/chat/completions").strip()
 
-        
         try:
             response = requests.post(
                 groq_url,
@@ -224,10 +223,11 @@ Synthesize a professional, user-friendly final response answering the user's req
                                 callback(delta)
                         except Exception:
                             pass
-        except Exception as e:
-            callback(f"\n[Synthesis Error: {str(e)}]")
-    else:
-        # Ollama
+            return
+        except Exception:
+            pass
+
+    elif provider == "ollama":
         ollama_url = os.getenv("BLINKY_OLLAMA_URL", "http://localhost:11434/api/generate").strip()
         model = os.getenv("BLINKY_OLLAMA_MODEL", "gemma4:e4b").strip()
         
@@ -255,8 +255,27 @@ Synthesize a professional, user-friendly final response answering the user's req
                             callback(delta)
                     except Exception:
                         pass
-        except Exception as e:
-            callback(f"\n[Synthesis Error: {str(e)}]")
+            return
+        except Exception:
+            pass
+
+    # Universal unified provider synthesis via ask_text_model (Gemini, Vertex, Antigravity, OpenAI, Codex, Anthropic, Custom, etc.)
+    try:
+        from ai.client import ask_text_model
+        res = ask_text_model(prompt, max_tokens=1000)
+        if isinstance(res, dict):
+            final_text = res.get("summary") or res.get("response") or res.get("text") or res.get("content") or res.get("answer")
+            if not final_text:
+                if len(res) == 1:
+                    final_text = str(list(res.values())[0])
+                else:
+                    final_text = json.dumps(res, indent=2)
+        else:
+            final_text = str(res)
+        if final_text:
+            callback(final_text)
+    except Exception as exc:
+        callback(f"\n[Synthesis Error: {str(exc)}]")
 
 def get_query_signature(query: str) -> str:
     cleaned = query.strip().lower()
