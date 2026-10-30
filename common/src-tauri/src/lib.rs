@@ -1076,10 +1076,8 @@ fn start_ui_observer(app: &AppHandle) {
 
 // Spawns the Node.js WhatsApp backend server in the background
 fn start_whatsapp_backend(app: &AppHandle) {
-    if std::env::var("BLINKY_DISABLE_WHATSAPP")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-    {
+    // Keep WhatsApp backend dormant by default
+    if std::env::var("BLINKY_ENABLE_WHATSAPP").ok().as_deref() != Some("1") {
         return;
     }
 
@@ -1383,14 +1381,8 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             if let Some(overlay) = app.get_webview_window("overlay") {
                 configure_overlay_passthrough(&overlay);
+                let _ = overlay.show();
                 let _ = overlay.emit("blinky://guidance", serde_json::json!({ "steps": [] }));
-            }
-
-            if std::env::var("BLINKY_BACKGROUND_SERVER").ok().as_deref() != Some("1") {
-                if let Some(command) = app.get_webview_window("command") {
-                    let _ = command.show();
-                    let _ = command.set_focus();
-                }
             }
 
             let app_handle = app.handle().clone();

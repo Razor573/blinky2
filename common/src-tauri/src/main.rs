@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 struct CursorGuard;
 
 impl Drop for CursorGuard {
@@ -21,4 +23,3 @@ fn main() {
 
     blinky_lib::run()
 }
-
