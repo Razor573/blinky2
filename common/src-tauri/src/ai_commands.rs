@@ -351,6 +351,7 @@ pub async fn ping_ai_model(
     api_key: Option<String>,
     project_id: Option<String>,
     custom_url: Option<String>,
+    service_account_json: Option<String>,
 ) -> Result<PingResult, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -445,6 +446,37 @@ pub async fn ping_ai_model(
             } else {
                 model.trim()
             };
+
+            // 1. Check if Service Account JSON was provided
+            if let Some(sa_raw) = service_account_json.filter(|s| !s.trim().is_empty()) {
+                match blinky_agent::providers::vertex::validate_service_account_json(&sa_raw) {
+                    Ok(creds) => {
+                        let latency = t0.elapsed().as_millis() as u64;
+                        return Ok(PingResult {
+                            ok: true,
+                            provider: prov,
+                            model: active_model.to_string(),
+                            latency_ms: latency,
+                            status_code: 200,
+                            error: None,
+                            details: Some(format!("Valid Service Account (Project: {}, Email: {})", creds.project_id, creds.client_email)),
+                        });
+                    }
+                    Err(e) => {
+                        let latency = t0.elapsed().as_millis() as u64;
+                        return Ok(PingResult {
+                            ok: false,
+                            provider: prov,
+                            model: active_model.to_string(),
+                            latency_ms: latency,
+                            status_code: 400,
+                            error: Some("Invalid Service Account JSON".into()),
+                            details: Some(e.to_string()),
+                        });
+                    }
+                }
+            }
+
             let proj = project_id
                 .filter(|p| !p.trim().is_empty())
                 .or_else(|| std::env::var("VERTEX_PROJECT_ID").ok())
@@ -458,7 +490,7 @@ pub async fn ping_ai_model(
                     latency_ms: 0,
                     status_code: 400,
                     error: Some("Missing Vertex AI Project ID".into()),
-                    details: Some("Please enter your Google Cloud Vertex AI Project ID in Settings.".into()),
+                    details: Some("Please enter your Google Cloud Vertex AI Project ID or Service Account JSON in Settings.".into()),
                 });
             }
 
@@ -919,6 +951,23 @@ pub async fn ping_ai_model(
     }
 }
 
+fn with_auto_option(mut list: Vec<ModelOption>) -> Vec<ModelOption> {
+    if !list.iter().any(|m| m.id == "auto") {
+        list.insert(
+            0,
+            ModelOption {
+                id: "auto".into(),
+                name: "Auto (Intelligent Routing)".into(),
+                desc: Some("Dynamically chooses fast model for simple tasks and pro model for complex reasoning".into()),
+                badge: Some("Auto".into()),
+                tier: Some("smart".into()),
+                is_custom: None,
+            },
+        );
+    }
+    list
+}
+
 #[tauri::command]
 pub async fn fetch_provider_models(
     provider: String,
@@ -932,7 +981,7 @@ pub async fn fetch_provider_models(
 
     let prov = provider.to_lowercase().trim().to_string();
 
-    match prov.as_str() {
+    let models: Vec<ModelOption> = match prov.as_str() {
         "gemini" | "google" => {
             let key = api_key
                 .filter(|k| !k.trim().is_empty())
@@ -986,7 +1035,7 @@ pub async fn fetch_provider_models(
                                     }
                                 }
                                 if !list.is_empty() {
-                                    return Ok(list);
+                                    return Ok(with_auto_option(list));
                                 }
                             }
                         }
@@ -994,7 +1043,7 @@ pub async fn fetch_provider_models(
                 }
             }
 
-            Ok(vec![
+            vec![
                 ModelOption { id: "gemini-3.8-flash".into(), name: "Gemini 3.8 Flash".into(), desc: Some("Current generation Flash model".into()), badge: Some("Default Fast".into()), tier: Some("fast".into()), is_custom: None },
                 ModelOption { id: "gemini-3.7-flash".into(), name: "Gemini 3.7 Flash".into(), desc: Some("High-speed multimodal reasoning".into()), badge: Some("Fast".into()), tier: Some("fast".into()), is_custom: None },
                 ModelOption { id: "gemini-3.6-flash".into(), name: "Gemini 3.6 Flash".into(), desc: Some("Fast multimodal".into()), badge: Some("Fast".into()), tier: Some("fast".into()), is_custom: None },
@@ -1003,27 +1052,27 @@ pub async fn fetch_provider_models(
                 ModelOption { id: "gemini-3.1-flash-lite".into(), name: "Gemini 3.1 Flash-Lite".into(), desc: Some("Lightweight model".into()), badge: Some("Lite".into()), tier: Some("fast".into()), is_custom: None },
                 ModelOption { id: "gemini-3.1-pro-preview".into(), name: "Gemini 3.1 Pro Preview".into(), desc: Some("Advanced reasoning model".into()), badge: Some("Smart".into()), tier: Some("smart".into()), is_custom: None },
                 ModelOption { id: "gemini-4-argon".into(), name: "Gemini 4 Argon".into(), desc: Some("Deep intelligence & long context".into()), badge: Some("Flagship".into()), tier: Some("smart".into()), is_custom: None },
-            ])
+            ]
         }
 
-        "vertex" => Ok(vec![
+        "vertex" => vec![
             ModelOption { id: "gemini-3.8-flash".into(), name: "Gemini 3.8 Flash".into(), desc: Some("Vertex enterprise fast model".into()), badge: Some("Default Fast".into()), tier: Some("fast".into()), is_custom: None },
             ModelOption { id: "gemini-4-argon".into(), name: "Gemini 4 Argon".into(), desc: Some("Vertex enterprise deep reasoning".into()), badge: Some("Smart".into()), tier: Some("smart".into()), is_custom: None },
             ModelOption { id: "gemini-3.1-pro-preview".into(), name: "Gemini 3.1 Pro Preview".into(), desc: Some("Vertex enterprise preview".into()), badge: Some("Pro".into()), tier: Some("smart".into()), is_custom: None },
-        ]),
+        ],
 
-        "antigravity" => Ok(vec![
+        "antigravity" => vec![
             ModelOption { id: "gemini-3.8-flash".into(), name: "Gemini 3.8 Flash".into(), desc: Some("Google Antigravity fast tier".into()), badge: Some("Default Fast".into()), tier: Some("fast".into()), is_custom: None },
             ModelOption { id: "gemini-3.1-pro-high".into(), name: "Gemini 3.1 Pro High".into(), desc: Some("Google Antigravity high-reasoning tier".into()), badge: Some("Smart".into()), tier: Some("smart".into()), is_custom: None },
             ModelOption { id: "gemini-3.7-flash".into(), name: "Gemini 3.7 Flash".into(), desc: Some("Fast inference".into()), badge: Some("Flash".into()), tier: Some("fast".into()), is_custom: None },
-        ]),
+        ],
 
-        "codex" => Ok(vec![
+        "codex" => vec![
             ModelOption { id: "gpt-5.5".into(), name: "GPT-5.5".into(), desc: Some("Codex fast completion".into()), badge: Some("Fast".into()), tier: Some("fast".into()), is_custom: None },
             ModelOption { id: "gpt-5.5-codex".into(), name: "GPT-5.5 Codex".into(), desc: Some("Codex full reasoning".into()), badge: Some("Default Smart".into()), tier: Some("smart".into()), is_custom: None },
             ModelOption { id: "gpt-5.4-codex".into(), name: "GPT-5.4 Codex".into(), desc: Some("High capability code model".into()), badge: Some("Smart".into()), tier: Some("smart".into()), is_custom: None },
             ModelOption { id: "gpt-5.2-codex".into(), name: "GPT-5.2 Codex".into(), desc: Some("Stable code intelligence".into()), badge: Some("Codex".into()), tier: Some("smart".into()), is_custom: None },
-        ]),
+        ],
 
         "openai" => {
             let key = api_key
@@ -1051,7 +1100,7 @@ pub async fn fetch_provider_models(
                                     }
                                 }
                                 if !list.is_empty() {
-                                    return Ok(list);
+                                    return Ok(with_auto_option(list));
                                 }
                             }
                         }
@@ -1059,20 +1108,20 @@ pub async fn fetch_provider_models(
                 }
             }
 
-            Ok(vec![
+            vec![
                 ModelOption { id: "gpt-4o-mini".into(), name: "GPT-4o mini".into(), desc: Some("Fast multimodal chat".into()), badge: Some("Default Fast".into()), tier: Some("fast".into()), is_custom: None },
                 ModelOption { id: "gpt-4.1-mini".into(), name: "GPT-4.1 mini".into(), desc: Some("Next-gen mini reasoning".into()), badge: Some("Fast".into()), tier: Some("fast".into()), is_custom: None },
                 ModelOption { id: "gpt-4.1-nano".into(), name: "GPT-4.1 nano".into(), desc: Some("Lowest latency completion".into()), badge: Some("Ultra-Fast".into()), tier: Some("fast".into()), is_custom: None },
                 ModelOption { id: "gpt-4o".into(), name: "GPT-4o".into(), desc: Some("High capability flagship".into()), badge: Some("Smart".into()), tier: Some("smart".into()), is_custom: None },
                 ModelOption { id: "gpt-4.1".into(), name: "GPT-4.1".into(), desc: Some("Advanced flagship reasoning".into()), badge: Some("Smart".into()), tier: Some("smart".into()), is_custom: None },
                 ModelOption { id: "o3-mini".into(), name: "o3-mini".into(), desc: Some("Deep math and code reasoning".into()), badge: Some("Reasoning".into()), tier: Some("smart".into()), is_custom: None },
-            ])
+            ]
         }
 
-        "anthropic" => Ok(vec![
+        "anthropic" => vec![
             ModelOption { id: "claude-haiku-4-5-20251001".into(), name: "Claude Haiku 4.5".into(), desc: Some("Ultra-fast Claude 4.5".into()), badge: Some("Default Fast".into()), tier: Some("fast".into()), is_custom: None },
             ModelOption { id: "claude-sonnet-4-5-20250929".into(), name: "Claude Sonnet 4.5".into(), desc: Some("Top-tier code and vision reasoning".into()), badge: Some("Default Smart".into()), tier: Some("smart".into()), is_custom: None },
-        ]),
+        ],
 
         "ollama" => {
             let base = custom_url
@@ -1099,22 +1148,24 @@ pub async fn fetch_provider_models(
                                 }
                             }
                             if !list.is_empty() {
-                                return Ok(list);
+                                return Ok(with_auto_option(list));
                             }
                         }
                     }
                 }
             }
 
-            Ok(vec![
+            vec![
                 ModelOption { id: "qwen2.5:7b".into(), name: "Qwen 2.5 7B".into(), desc: Some("Local instruction model".into()), badge: Some("Recommended".into()), tier: Some("fast".into()), is_custom: None },
                 ModelOption { id: "llama3.2:latest".into(), name: "Llama 3.2".into(), desc: Some("Lightweight local model".into()), badge: Some("Fast Local".into()), tier: Some("fast".into()), is_custom: None },
                 ModelOption { id: "deepseek-r1:8b".into(), name: "DeepSeek R1 8B".into(), desc: Some("Local reasoning model".into()), badge: Some("Local Reasoning".into()), tier: Some("smart".into()), is_custom: None },
-            ])
+            ]
         }
 
-        _ => Ok(vec![
+        _ => vec![
             ModelOption { id: "default".into(), name: "Custom Default".into(), desc: Some("Custom OpenAI-compatible model".into()), badge: Some("Custom".into()), tier: Some("fast".into()), is_custom: Some(true) },
-        ]),
-    }
+        ],
+    };
+
+    Ok(with_auto_option(models))
 }

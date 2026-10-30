@@ -15,7 +15,8 @@ export async function pingModel(
   apiKey?: string,
   model?: string,
   customUrl?: string,
-  projectId?: string
+  projectId?: string,
+  serviceAccountJson?: string
 ): Promise<PingResult> {
   const prov = (provider || 'gemini').toLowerCase().trim();
   const activeModel = model || (prov === 'codex' ? 'gpt-5.5' : prov === 'openai' ? 'gpt-4o-mini' : 'gemini-3.8-flash');
@@ -27,6 +28,7 @@ export async function pingModel(
       apiKey: apiKey?.trim() || null,
       projectId: projectId?.trim() || null,
       customUrl: customUrl?.trim() || null,
+      serviceAccountJson: serviceAccountJson?.trim() || null,
     });
     return result;
   } catch (err: any) {

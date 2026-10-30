@@ -505,12 +505,225 @@ export function CommandBar() {
     localStorage.setItem('clinky_vertex_location', val);
   };
 
+  // Reasoning & Thinking Level
+  const [thinkingLevel, setThinkingLevel] = useState<'off' | 'low' | 'medium' | 'high'>(() => {
+    return (localStorage.getItem('blinky_thinking_level') as any) || 'medium';
+  });
+  const updateThinkingLevel = (level: 'off' | 'low' | 'medium' | 'high') => {
+    setThinkingLevel(level);
+    localStorage.setItem('blinky_thinking_level', level);
+  };
+
+  // STT & Voice Models Configuration
+  const [primarySttModel, setPrimarySttModel] = useState<string>(() => {
+    return localStorage.getItem('blinky_primary_stt_model') || localStorage.getItem('blinky_stt_provider') || 'gemini-3.5-transcribe';
+  });
+  const updatePrimarySttModel = (val: string) => {
+    setPrimarySttModel(val);
+    setSttProvider(val);
+    localStorage.setItem('blinky_primary_stt_model', val);
+    localStorage.setItem('blinky_stt_provider', val);
+  };
+
+  const [fallbackSttModel, setFallbackSttModel] = useState<string>(() => {
+    return localStorage.getItem('blinky_fallback_stt_model') || 'gemini-3.5-flash-lite';
+  });
+  const updateFallbackSttModel = (val: string) => {
+    setFallbackSttModel(val);
+    localStorage.setItem('blinky_fallback_stt_model', val);
+  };
+
+  const [primaryLiveModel, setPrimaryLiveModel] = useState<string>(() => {
+    return localStorage.getItem('blinky_primary_live_model') || 'gemini-3.5-transcribe-live';
+  });
+  const updatePrimaryLiveModel = (val: string) => {
+    setPrimaryLiveModel(val);
+    localStorage.setItem('blinky_primary_live_model', val);
+  };
+
+  const [fallbackLiveModel, setFallbackLiveModel] = useState<string>(() => {
+    return localStorage.getItem('blinky_fallback_live_model') || 'gemini-3.5-flash-lite';
+  });
+  const updateFallbackLiveModel = (val: string) => {
+    setFallbackLiveModel(val);
+    localStorage.setItem('blinky_fallback_live_model', val);
+  };
+
+  const [autoRateLimitFallback, setAutoRateLimitFallback] = useState<boolean>(() => {
+    const saved = localStorage.getItem('blinky_auto_rate_limit_fallback');
+    return saved === null ? true : saved === 'true';
+  });
+  const updateAutoRateLimitFallback = (val: boolean) => {
+    setAutoRateLimitFallback(val);
+    localStorage.setItem('blinky_auto_rate_limit_fallback', String(val));
+  };
+
   const [sttProvider, setSttProvider] = useState<string>(() => {
-    return localStorage.getItem('blinky_stt_provider') || 'gemini-3.5-transcribe';
+    return localStorage.getItem('blinky_primary_stt_model') || localStorage.getItem('blinky_stt_provider') || 'gemini-3.5-transcribe';
   });
   const updateSttProvider = (val: string) => {
-    setSttProvider(val);
-    localStorage.setItem('blinky_stt_provider', val);
+    updatePrimarySttModel(val);
+  };
+
+  // Vertex AI Service Account JSON
+  const [vertexServiceAccountJson, setVertexServiceAccountJson] = useState<string>(() => {
+    return localStorage.getItem('clinky_vertex_service_account_json') || '';
+  });
+  const [vertexParsedSa, setVertexParsedSa] = useState<{ projectId?: string; clientEmail?: string; valid: boolean } | null>(() => {
+    const raw = localStorage.getItem('clinky_vertex_service_account_json') || '';
+    if (!raw.trim()) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed.project_id && parsed.client_email) {
+        return { projectId: parsed.project_id, clientEmail: parsed.client_email, valid: true };
+      }
+    } catch {}
+    return { valid: false };
+  });
+
+  const updateVertexServiceAccountJson = (raw: string) => {
+    setVertexServiceAccountJson(raw);
+    if (raw.trim()) {
+      localStorage.setItem('clinky_vertex_service_account_json', raw);
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed.project_id && parsed.client_email) {
+          setVertexParsedSa({ projectId: parsed.project_id, clientEmail: parsed.client_email, valid: true });
+          if (!vertexProjectId.trim()) {
+            updateVertexProjectId(parsed.project_id);
+          }
+          return;
+        }
+      } catch {}
+      setVertexParsedSa({ valid: false });
+    } else {
+      localStorage.removeItem('clinky_vertex_service_account_json');
+      setVertexParsedSa(null);
+    }
+  };
+
+  // Audio helper utilities: Base64 conversion, Gemini STT with fallback, Whisper STT
+  const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const dataUrl = reader.result as string;
+        const base64 = dataUrl.split(',')[1] || '';
+        resolve(base64);
+      };
+      reader.onerror = reject;
+    });
+  };
+
+  const transcribeWithGemini = async (blob: Blob, requestedModel?: string): Promise<string> => {
+    const key = geminiApiKey || (import.meta as any).env?.VITE_GEMINI_API_KEY;
+    if (!key) {
+      throw new Error('Gemini API Key is not configured.');
+    }
+    const base64Audio = await blobToBase64(blob);
+    const mimeType = blob.type && blob.type.length > 0 ? blob.type.split(';')[0] : 'audio/webm';
+
+    const callModel = async (modelName: string): Promise<string> => {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(key)}`;
+      const payload = {
+        contents: [
+          {
+            parts: [
+              { text: 'Transcribe this spoken audio accurately into text. Output ONLY the raw transcript without commentary, quotes, markdown, or timestamps.' },
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Audio
+                }
+              }
+            ]
+          }
+        ]
+      };
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.status === 429) {
+        throw new Error('429_RATE_LIMIT');
+      }
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Gemini STT error (${res.status}): ${errText}`);
+      }
+
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    };
+
+    const primary = requestedModel || primarySttModel || 'gemini-3.5-transcribe';
+    try {
+      return await callModel(primary);
+    } catch (err: any) {
+      if ((err?.message === '429_RATE_LIMIT' || String(err).includes('429')) && autoRateLimitFallback && fallbackSttModel && fallbackSttModel !== 'none') {
+        console.warn(`Gemini STT model ${primary} encountered 429. Automatically falling back to ${fallbackSttModel}...`);
+        setStatus(`Rate limit hit on ${primary}. Failing over to ${fallbackSttModel}...`);
+        return await callModel(fallbackSttModel);
+      }
+      throw err;
+    }
+  };
+
+  const transcribeWithWhisper = async (blob: Blob, key: string, model = 'whisper-1'): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', blob, 'audio.webm');
+    formData.append('model', model);
+    formData.append('response_format', 'json');
+
+    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`
+      },
+      body: formData
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`OpenAI Whisper error (${res.status}): ${errText}`);
+    }
+
+    const data = await res.json();
+    return data.text?.trim() || '';
+  };
+
+  const resolveAutoModel = (query: string, currentProv: string, _targetAgent: 'agent1' | 'agent2'): string => {
+    const q = query.toLowerCase();
+    const isComplex =
+      q.length > 80 ||
+      q.includes('code') ||
+      q.includes('debug') ||
+      q.includes('why') ||
+      q.includes('how to') ||
+      q.includes('architecture') ||
+      q.includes('create a') ||
+      q.includes('write a') ||
+      q.includes('analyze') ||
+      q.includes('script') ||
+      thinkingLevel === 'high';
+
+    if (thinkingLevel === 'off') {
+      if (currentProv === 'openai' || currentProv === 'codex') return 'gpt-4o-mini';
+      return 'gemini-3.8-flash';
+    }
+
+    if (isComplex) {
+      if (currentProv === 'openai' || currentProv === 'codex') return 'gpt-5.5-codex';
+      if (currentProv === 'anthropic') return 'claude-sonnet-4-5-20250929';
+      return 'gemini-3.1-pro-preview';
+    } else {
+      if (currentProv === 'openai' || currentProv === 'codex') return 'gpt-4o-mini';
+      if (currentProv === 'anthropic') return 'claude-haiku-4-5-20251001';
+      return 'gemini-3.8-flash';
+    }
   };
 
   // OAuth State & Actions
@@ -720,12 +933,20 @@ export function CommandBar() {
     key: string,
     model?: string,
     url?: string,
-    projId?: string
+    projId?: string,
+    saJson?: string
   ) => {
     setPingTesting(true);
     setPingResult(null);
     try {
-      const res = await pingModel(prov, key, model, url, projId || (prov === 'vertex' ? vertexProjectId : undefined));
+      const res = await pingModel(
+        prov,
+        key,
+        model,
+        url,
+        projId || (prov === 'vertex' ? vertexProjectId : undefined),
+        saJson || (prov === 'vertex' ? vertexServiceAccountJson : undefined)
+      );
       setPingResult(res);
     } catch (e: any) {
       setPingResult({
@@ -1394,121 +1615,130 @@ export function CommandBar() {
   }, [isSpeaking, isRecording]);
 
   const handleAudioTranscription = async (blob: Blob) => {
-    const currentVP = voiceProviderRef.current;
-    if (currentVP === 'assemblyai') {
-      let aaiKey = assemblyaiApiKey || assemblyaiApiKeyRef.current;
-      if (!aaiKey) {
-        aaiKey = (import.meta as any).env?.VITE_ASSEMBLY_AI_API_KEY || '';
-      }
-      if (!aaiKey) {
-        try {
-          const s = await getSettings();
-          if (s.assemblyai_api_key) {
-            aaiKey = s.assemblyai_api_key;
-            setAssemblyaiApiKey(s.assemblyai_api_key);
-            assemblyaiApiKeyRef.current = s.assemblyai_api_key;
-          }
-        } catch { }
-      }
+    if (!blob || blob.size < 4000) {
+      setStatus('Could not hear anything clearly. Please speak louder and try again.');
+      void resumeWakeWord();
+      return;
+    }
 
-      if (!aaiKey) {
-        setStatus('Please set your AssemblyAI API Key in settings first.');
-        void resumeWakeWord();
-        return;
-      }
+    const hasGemini = Boolean(geminiApiKey && geminiApiKey.trim());
+    const hasOpenAI = Boolean(openaiApiKey && openaiApiKey.trim());
+    const hasAssemblyAI = Boolean((assemblyaiApiKey && assemblyaiApiKey.trim()) || (assemblyaiApiKeyRef.current && assemblyaiApiKeyRef.current.trim()));
+    const hasSarvam = Boolean((sarvamApiKey && sarvamApiKey.trim()) || (sarvamApiKeyRef.current && sarvamApiKeyRef.current.trim()));
+    const hasGroq = Boolean((groqApiKey && groqApiKey.trim()) || (import.meta as any).env?.VITE_GROQ_API_KEY);
 
-      // Guard: don't send silence / empty clips to AssemblyAI.
-      // Universal-3-Pro with language detection fails on these with
-      // "language_detection cannot be performed on files with no spoken audio."
-      if (!blob || blob.size < 15000) {
-        setStatus('Could not hear anything clearly. Please speak louder and try again.');
-        void resumeWakeWord();
-        return;
-      }
-
-      setStatus('Transcribing with AssemblyAI Universal-3 Pro...');
-      try {
-        const transcript = await transcribeAudioWithAssemblyAI(blob, aaiKey);
-        if (transcript) {
-          setStatus(`Searching for: "${transcript}"`);
-          void executeTutor(transcript, true);
-          return;
-        } else {
-          setStatus('Could not hear anything clearly.');
-          void resumeWakeWord();
-          return;
-        }
-      } catch (err: any) {
-        console.error('AssemblyAI transcription error:', err);
-        const rawMsg = err?.message || String(err);
-        // Map the known "no spoken audio" / language_detection failure to a friendly prompt.
-        if (/no spoken audio|language_detection|nothing.*speech|empty/i.test(rawMsg)) {
-          setStatus('No speech detected. Please speak clearly into the mic and try again.');
-        } else {
-          setStatus(`AssemblyAI STT error: ${rawMsg}`);
-        }
-        void resumeWakeWord();
-        return;
-      }
+    // Determine target STT engine based on user selection or auto-detect based on available keys
+    let targetEngine = primarySttModel;
+    if (targetEngine.startsWith('gemini') && !hasGemini) {
+      if (hasOpenAI) targetEngine = 'whisper-1';
+      else if (hasAssemblyAI) targetEngine = 'assemblyai';
+      else if (hasSarvam) targetEngine = 'sarvam';
+      else if (hasGroq) targetEngine = 'groq-whisper';
+    } else if (targetEngine.includes('whisper') && !hasOpenAI && !hasGroq) {
+      if (hasGemini) targetEngine = 'gemini-3.5-transcribe';
+      else if (hasAssemblyAI) targetEngine = 'assemblyai';
+      else if (hasSarvam) targetEngine = 'sarvam';
     }
 
     let transcribedText = '';
-    const key = sarvamApiKey || sarvamApiKeyRef.current;
-    if (key) {
+
+    // Route 1: Gemini STT
+    if (targetEngine.startsWith('gemini') && hasGemini) {
+      setStatus(`Transcribing with ${targetEngine}...`);
       try {
-        const formData = new FormData();
-        formData.append('file', blob, 'query.webm');
-        formData.append('model', 'saaras:v3');
-        formData.append('language_code', 'en-IN');
-
-        const res = await fetch('https://api.sarvam.ai/speech-to-text', {
-          method: 'POST',
-          headers: {
-            'api-subscription-key': key,
-          },
-          body: formData,
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          transcribedText = data.transcript?.trim() || '';
-        } else {
-          let payload: any = {};
-          try { payload = await res.json(); } catch { }
-          console.warn('Sarvam STT failed, falling back to Groq Whisper:', getSarvamErrorMessage(payload, res.status));
-        }
+        transcribedText = await transcribeWithGemini(blob, targetEngine);
       } catch (err: any) {
-        console.warn('Sarvam STT connection error, falling back to Groq Whisper:', err);
+        console.error('Gemini STT error:', err);
+        if (hasOpenAI) {
+          setStatus('Gemini STT unavailable. Falling back to Whisper...');
+          try {
+            transcribedText = await transcribeWithWhisper(blob, openaiApiKey);
+          } catch (oErr) {
+            console.error('Whisper fallback error:', oErr);
+          }
+        }
       }
     }
 
-    // Fallback: Groq Whisper Large V3
-    const gKey = groqApiKey || (import.meta as any).env?.VITE_GROQ_API_KEY;
-    if (!transcribedText && gKey) {
-      setStatus('Transcribing with Groq Whisper...');
+    // Route 2: OpenAI Whisper
+    if (!transcribedText && (targetEngine === 'whisper-1' || targetEngine === 'whisper') && hasOpenAI) {
+      setStatus('Transcribing with OpenAI Whisper...');
       try {
-        const groqFormData = new FormData();
-        groqFormData.append('file', blob, 'query.webm');
-        groqFormData.append('model', 'whisper-large-v3');
-        groqFormData.append('response_format', 'json');
+        transcribedText = await transcribeWithWhisper(blob, openaiApiKey, 'whisper-1');
+      } catch (err: any) {
+        console.error('OpenAI Whisper STT error:', err);
+      }
+    }
 
-        const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${gKey}`,
-          },
-          body: groqFormData,
-        });
+    // Route 3: Groq Whisper
+    if (!transcribedText && (targetEngine === 'groq-whisper' || hasGroq) && hasGroq) {
+      const gKey = groqApiKey || (import.meta as any).env?.VITE_GROQ_API_KEY;
+      if (gKey) {
+        setStatus('Transcribing with Groq Whisper...');
+        try {
+          const groqFormData = new FormData();
+          groqFormData.append('file', blob, 'query.webm');
+          groqFormData.append('model', 'whisper-large-v3');
+          groqFormData.append('response_format', 'json');
 
-        if (groqRes.ok) {
-          const gData = await groqRes.json();
-          transcribedText = gData.text?.trim() || '';
-        } else {
-          const errBody = await groqRes.text();
-          console.error(`Groq Whisper STT error (${groqRes.status}):`, errBody);
+          const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${gKey}` },
+            body: groqFormData,
+          });
+
+          if (groqRes.ok) {
+            const gData = await groqRes.json();
+            transcribedText = gData.text?.trim() || '';
+          }
+        } catch (gErr: any) {
+          console.error('Groq Whisper STT connection error:', gErr);
         }
-      } catch (gErr: any) {
-        console.error('Groq Whisper STT connection error:', gErr);
+      }
+    }
+
+    // Route 4: AssemblyAI
+    if (!transcribedText && (targetEngine === 'assemblyai' || hasAssemblyAI)) {
+      let aaiKey = assemblyaiApiKey || assemblyaiApiKeyRef.current || (import.meta as any).env?.VITE_ASSEMBLY_AI_API_KEY || '';
+      if (!aaiKey) {
+        try {
+          const s = await getSettings();
+          if (s.assemblyai_api_key) aaiKey = s.assemblyai_api_key;
+        } catch {}
+      }
+      if (aaiKey) {
+        setStatus('Transcribing with AssemblyAI Universal-3 Pro...');
+        try {
+          transcribedText = await transcribeAudioWithAssemblyAI(blob, aaiKey);
+        } catch (err: any) {
+          console.error('AssemblyAI transcription error:', err);
+        }
+      }
+    }
+
+    // Route 5: Sarvam AI
+    if (!transcribedText && (targetEngine === 'sarvam' || hasSarvam)) {
+      const key = sarvamApiKey || sarvamApiKeyRef.current;
+      if (key) {
+        try {
+          const formData = new FormData();
+          formData.append('file', blob, 'query.webm');
+          formData.append('model', 'saaras:v3');
+          formData.append('language_code', 'en-IN');
+
+          const res = await fetch('https://api.sarvam.ai/speech-to-text', {
+            method: 'POST',
+            headers: { 'api-subscription-key': key },
+            body: formData,
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            transcribedText = data.transcript?.trim() || '';
+          }
+        } catch (err: any) {
+          console.warn('Sarvam STT connection error:', err);
+        }
       }
     }
 
@@ -1516,8 +1746,8 @@ export function CommandBar() {
       setStatus(`Searching for: "${transcribedText}"`);
       void executeTutor(transcribedText, true);
     } else {
-      if (!key && !gKey) {
-        setStatus('Please set your Sarvam AI or Groq API Key in settings first.');
+      if (!hasGemini && !hasOpenAI && !hasAssemblyAI && !hasSarvam && !hasGroq) {
+        setStatus('Please set your Gemini, OpenAI, AssemblyAI, or Sarvam API Key in settings first.');
       } else {
         setStatus('Could not hear anything clearly. Please check your mic and try again.');
       }
@@ -1534,42 +1764,50 @@ export function CommandBar() {
     let key = sarvamApiKey || sarvamApiKeyRef.current;
     let gKey = groqApiKey || (import.meta as any).env?.VITE_GROQ_API_KEY || '';
 
-    // If active provider is assemblyai but no key is present, auto-fallback to Sarvam or Groq
-    let effectiveVP = currentVP;
-    if (effectiveVP === 'assemblyai' && !aaiKey) {
-      if (key) {
-        effectiveVP = 'sarvam';
-      } else if (gKey) {
-        effectiveVP = 'sarvam'; // Will use Groq Whisper fallback in audio transcription
-      } else {
-        try {
-          const s = await getSettings();
-          if (s.assemblyai_api_key) {
-            setAssemblyaiApiKey(s.assemblyai_api_key);
-            assemblyaiApiKeyRef.current = s.assemblyai_api_key;
-            aaiKey = s.assemblyai_api_key;
-          } else if (s.sarvam_api_key) {
-            setSarvamApiKey(s.sarvam_api_key);
-            sarvamApiKeyRef.current = s.sarvam_api_key;
-            key = s.sarvam_api_key;
-            effectiveVP = 'sarvam';
-          } else if (s.groq_api_key) {
-            setGroqApiKey(s.groq_api_key);
-            gKey = s.groq_api_key;
-            effectiveVP = 'sarvam';
-          }
-        } catch { }
-      }
+    // Ensure we check ANY configured key: Gemini, OpenAI, Antigravity OAuth, AssemblyAI, Sarvam, Groq
+    let anyKeyPresent =
+      Boolean(geminiApiKey && geminiApiKey.trim()) ||
+      Boolean(openaiApiKey && openaiApiKey.trim()) ||
+      antigravityOAuth.connected ||
+      Boolean(aaiKey && aaiKey.trim()) ||
+      Boolean(key && key.trim()) ||
+      Boolean(gKey && gKey.trim()) ||
+      Boolean((import.meta as any).env?.VITE_GEMINI_API_KEY) ||
+      Boolean((import.meta as any).env?.VITE_ASSEMBLY_AI_API_KEY);
+
+    if (!anyKeyPresent) {
+      try {
+        const s = await getSettings();
+        if (s.gemini_api_key) {
+          setGeminiApiKey(s.gemini_api_key);
+          anyKeyPresent = true;
+        }
+        if (s.openai_api_key) {
+          setOpenaiApiKey(s.openai_api_key);
+          anyKeyPresent = true;
+        }
+        if (s.assemblyai_api_key) {
+          setAssemblyaiApiKey(s.assemblyai_api_key);
+          assemblyaiApiKeyRef.current = s.assemblyai_api_key;
+          aaiKey = s.assemblyai_api_key;
+          anyKeyPresent = true;
+        }
+        if (s.sarvam_api_key) {
+          setSarvamApiKey(s.sarvam_api_key);
+          sarvamApiKeyRef.current = s.sarvam_api_key;
+          key = s.sarvam_api_key;
+          anyKeyPresent = true;
+        }
+        if (s.groq_api_key) {
+          setGroqApiKey(s.groq_api_key);
+          gKey = s.groq_api_key;
+          anyKeyPresent = true;
+        }
+      } catch { }
     }
 
-    if (effectiveVP === 'assemblyai' && !aaiKey) {
-      if (!key && !gKey) {
-        setStatus('Please set your AssemblyAI, Sarvam, or Groq API Key in settings first.');
-        isStartingRecordingRef.current = false;
-        return;
-      }
-    } else if (effectiveVP === 'sarvam' && !key && !gKey) {
-      setStatus('Please set your Sarvam AI or Groq API Key in settings first.');
+    if (!anyKeyPresent) {
+      setStatus('Please set your Gemini, OpenAI, AssemblyAI, or Sarvam API Key in settings first.');
       isStartingRecordingRef.current = false;
       return;
     }
@@ -1749,13 +1987,16 @@ export function CommandBar() {
 
       mediaRecorder.start();
       setIsRecording(true);
-      setStatus(
-        currentVP === 'assemblyai'
-          ? assemblyaiVoiceMode === 'agent'
-            ? '⚡ AssemblyAI Voice Agent Listening (Universal-3 Pro)...'
-            : '🎙️ AssemblyAI Realtime STT Listening...'
-          : '🎙️ Sarvam AI Listening... Click mic to stop.'
-      );
+      const listeningStatus = primarySttModel.startsWith('gemini')
+        ? `🎙️ Gemini STT Listening (${primarySttModel})... Click mic to stop.`
+        : primarySttModel.includes('whisper')
+        ? '🎙️ Whisper STT Listening... Click mic to stop.'
+        : currentVP === 'assemblyai'
+        ? assemblyaiVoiceMode === 'agent'
+          ? '⚡ AssemblyAI Voice Agent Listening (Universal-3 Pro)...'
+          : '🎙️ AssemblyAI Realtime STT Listening...'
+        : '🎙️ Sarvam AI Listening... Click mic to stop.';
+      setStatus(listeningStatus);
 
       // Auto-stop after 12 seconds as a fallback
       setTimeout(() => {
@@ -1827,7 +2068,19 @@ export function CommandBar() {
   ) {
     if (isRunningRef.current) return;
     isRunningRef.current = true;
-let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!?]*/i, '').trim();
+    let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!?]*/i, '').trim();
+
+    // Auto Mode intelligent model routing
+    if (agent1Model === 'auto') {
+      const resolvedModel = resolveAutoModel(effectiveQuery, provider, 'agent1');
+      void persistAllSettings({ modelName: resolvedModel });
+    }
+    if (agent2Model === 'auto') {
+      const resolvedAgent2 = resolveAutoModel(effectiveQuery, agent2Provider, 'agent2');
+      if (agent2Provider === 'gemini') {
+        setGeminiModel(resolvedAgent2);
+      }
+    }
     if (attachedFiles.length > 0) {
       const pathsStr = attachedFiles.map((f) => f.path).join(', ');
       const prefix = `[Referenced Files: ${pathsStr}]`;
@@ -3997,6 +4250,52 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                         )}
                       </div>
                     </div>
+
+                    {/* Reasoning & Deliberation Thinking Level */}
+                    <div className="settings-input-group" style={{ marginTop: '16px' }}>
+                      <div className="settings-input-header">
+                        <label className="settings-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <Sliders size={14} style={{ color: '#ff5a36' }} />
+                          <span>Deliberation Thinking Level</span>
+                        </label>
+                        <span className="agent-badge-pill ember" style={{ fontSize: '10px' }}>
+                          {thinkingLevel === 'off' ? 'Off / None' : thinkingLevel === 'low' ? 'Low (Fast)' : thinkingLevel === 'medium' ? 'Medium (Balanced)' : 'High (Deep Reasoning)'}
+                        </span>
+                      </div>
+                      <div className="settings-provider-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+                        <div
+                          className={`provider-grid-item ${thinkingLevel === 'off' ? 'active' : ''}`}
+                          onClick={() => updateThinkingLevel('off')}
+                        >
+                          <span className="provider-grid-item-label">Off / None</span>
+                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Zero latency</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${thinkingLevel === 'low' ? 'active' : ''}`}
+                          onClick={() => updateThinkingLevel('low')}
+                        >
+                          <span className="provider-grid-item-label">Low</span>
+                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Fast reflection</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${thinkingLevel === 'medium' ? 'active' : ''}`}
+                          onClick={() => updateThinkingLevel('medium')}
+                        >
+                          <span className="provider-grid-item-label">Medium</span>
+                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Balanced · Default</span>
+                        </div>
+                        <div
+                          className={`provider-grid-item ${thinkingLevel === 'high' ? 'active' : ''}`}
+                          onClick={() => updateThinkingLevel('high')}
+                        >
+                          <span className="provider-grid-item-label">High</span>
+                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Deep Reasoning</span>
+                        </div>
+                      </div>
+                      <p className="settings-help-text" style={{ marginTop: '6px' }}>
+                        Controls the reasoning budget for vision-guided click decomposition, auto-routing decisions, and multi-step tasks.
+                      </p>
+                    </div>
                   </div>
                 )}
 
@@ -4209,73 +4508,127 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                       <span className="agent-badge-pill emerald">Streaming Voice &amp; STT</span>
                     </div>
                     <p className="settings-help-text">
-                      High-fidelity speech transcription, real-time audio chunking, and low-latency speech synthesis.
+                      High-fidelity speech transcription, bidirectional speech APIs, rate-limit fallback failover, and audio synthesis.
                     </p>
 
-                    {/* STT Selection */}
-                    <div className="settings-input-group">
-                      <label className="settings-label">Speech-To-Text (STT) Engine</label>
-                      <div className="settings-provider-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
-                        <div
-                          className={`provider-grid-item ${sttProvider === 'gemini-3.5-transcribe' ? 'active' : ''}`}
-                          onClick={() => updateSttProvider('gemini-3.5-transcribe')}
-                        >
-                          <Sparkles size={15} style={{ color: '#c084fc' }} />
-                          <span className="provider-grid-item-label">Gemini Transcribe</span>
-                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>gemini-3.5-transcribe</span>
-                        </div>
-                        <div
-                          className={`provider-grid-item ${sttProvider === 'whisper' ? 'active' : ''}`}
-                          onClick={() => updateSttProvider('whisper')}
-                        >
-                          <Cpu size={15} style={{ color: '#10b981' }} />
-                          <span className="provider-grid-item-label">Whisper</span>
-                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>OpenAI / Local</span>
-                        </div>
-                        <div
-                          className={`provider-grid-item ${sttProvider === 'assemblyai' ? 'active' : ''}`}
-                          onClick={() => updateSttProvider('assemblyai')}
-                        >
-                          <Zap size={15} style={{ color: '#38bdf8' }} />
-                          <span className="provider-grid-item-label">AssemblyAI</span>
-                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Streaming STT</span>
-                        </div>
-                        <div
-                          className={`provider-grid-item ${sttProvider === 'sarvam' ? 'active' : ''}`}
-                          onClick={() => updateSttProvider('sarvam')}
-                        >
-                          <Volume2 size={15} style={{ color: '#f59e0b' }} />
-                          <span className="provider-grid-item-label">Sarvam AI</span>
-                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Indian Languages</span>
-                        </div>
+                    {/* 1. Primary STT Model Selector */}
+                    <div className="settings-input-group" style={{ marginTop: '12px' }}>
+                      <div className="settings-input-header">
+                        <label className="settings-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <Sparkles size={14} style={{ color: '#c084fc' }} />
+                          <span>Primary STT Model (Speech-to-Text)</span>
+                        </label>
+                        <span className="agent-badge-pill violet" style={{ fontSize: '10px' }}>{primarySttModel}</span>
                       </div>
+                      <select
+                        className="settings-text-input"
+                        value={primarySttModel}
+                        onChange={(e) => updatePrimarySttModel(e.target.value)}
+                        style={{ width: '100%', padding: '8px 12px', background: 'rgba(0, 0, 0, 0.45)', color: '#fff', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: '6px' }}
+                      >
+                        <option value="gemini-3.5-transcribe" style={{ background: '#1e293b' }}>Gemini 3.5 Transcribe (Default · Low Latency)</option>
+                        <option value="gemini-3.5-flash-lite" style={{ background: '#1e293b' }}>Gemini 3.5 Flash-Lite (Quota-Friendly)</option>
+                        <option value="gemini-3.8-flash" style={{ background: '#1e293b' }}>Gemini 3.8 Flash (Multimodal)</option>
+                        <option value="whisper-1" style={{ background: '#1e293b' }}>OpenAI Whisper-1</option>
+                        <option value="groq-whisper" style={{ background: '#1e293b' }}>Groq Whisper Large V3</option>
+                        <option value="assemblyai" style={{ background: '#1e293b' }}>AssemblyAI Universal-3 Pro</option>
+                        <option value="sarvam" style={{ background: '#1e293b' }}>Sarvam AI Multilingual (Indic Languages)</option>
+                      </select>
                     </div>
 
-                    {/* Conversational Voice Pipeline */}
-                    <div className="settings-input-group">
-                      <label className="settings-label">Bidirectional Conversational Streaming</label>
-                      <div className="settings-provider-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
-                        <div
-                          className={`provider-grid-item ${voiceProvider === 'assemblyai' ? 'active' : ''}`}
-                          onClick={() => updateVoiceProvider('assemblyai')}
-                        >
-                          <Zap size={16} />
-                          <span className="provider-grid-item-label">AssemblyAI Realtime</span>
-                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Conversational Voice Agent</span>
+                    {/* 2. Fallback STT Model Selector */}
+                    <div className="settings-input-group" style={{ marginTop: '12px' }}>
+                      <div className="settings-input-header">
+                        <label className="settings-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <Cpu size={14} style={{ color: '#38bdf8' }} />
+                          <span>Fallback STT Model (Rate-Limit &amp; Error Failover)</span>
+                        </label>
+                        <span className="agent-badge-pill ember" style={{ fontSize: '10px' }}>{fallbackSttModel}</span>
+                      </div>
+                      <select
+                        className="settings-text-input"
+                        value={fallbackSttModel}
+                        onChange={(e) => updateFallbackSttModel(e.target.value)}
+                        style={{ width: '100%', padding: '8px 12px', background: 'rgba(0, 0, 0, 0.45)', color: '#fff', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: '6px' }}
+                      >
+                        <option value="gemini-3.5-flash-lite" style={{ background: '#1e293b' }}>Gemini 3.5 Flash-Lite (Recommended Fallback)</option>
+                        <option value="gemini-3.8-flash" style={{ background: '#1e293b' }}>Gemini 3.8 Flash</option>
+                        <option value="whisper-1" style={{ background: '#1e293b' }}>OpenAI Whisper-1</option>
+                        <option value="groq-whisper" style={{ background: '#1e293b' }}>Groq Whisper Large V3</option>
+                        <option value="none" style={{ background: '#1e293b' }}>None (Disable Fallback)</option>
+                      </select>
+                    </div>
+
+                    {/* 3. Bidirectional Speech Primary Model Selector */}
+                    <div className="settings-input-group" style={{ marginTop: '14px' }}>
+                      <div className="settings-input-header">
+                        <label className="settings-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <Zap size={14} style={{ color: '#4ade80' }} />
+                          <span>Bidirectional Speech Primary Model (Live API)</span>
+                        </label>
+                        <span className="agent-badge-pill emerald" style={{ fontSize: '10px' }}>{primaryLiveModel}</span>
+                      </div>
+                      <select
+                        className="settings-text-input"
+                        value={primaryLiveModel}
+                        onChange={(e) => updatePrimaryLiveModel(e.target.value)}
+                        style={{ width: '100%', padding: '8px 12px', background: 'rgba(0, 0, 0, 0.45)', color: '#fff', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: '6px' }}
+                      >
+                        <option value="gemini-3.5-transcribe-live" style={{ background: '#1e293b' }}>Gemini 3.5 Transcribe Live ($0.54/hr · Ultra Low Latency)</option>
+                        <option value="gemini-3.8-live" style={{ background: '#1e293b' }}>Gemini 3.8 Live ($1.35/hr · Live Conversational Audio)</option>
+                        <option value="gemini-3.8-live-thinking" style={{ background: '#1e293b' }}>Gemini 3.8 Live Extended Thinking ($2.10/hr · Reasoning Live)</option>
+                        <option value="assemblyai" style={{ background: '#1e293b' }}>AssemblyAI Realtime Agent (Conversational Voice Agent)</option>
+                        <option value="sarvam" style={{ background: '#1e293b' }}>Sarvam AI Multilingual Streaming (Indian Accents)</option>
+                      </select>
+                    </div>
+
+                    {/* 4. Bidirectional Speech Fallback Model Selector */}
+                    <div className="settings-input-group" style={{ marginTop: '12px' }}>
+                      <div className="settings-input-header">
+                        <label className="settings-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <Volume2 size={14} style={{ color: '#f59e0b' }} />
+                          <span>Bidirectional Speech Fallback Model</span>
+                        </label>
+                        <span className="agent-badge-pill ember" style={{ fontSize: '10px' }}>{fallbackLiveModel}</span>
+                      </div>
+                      <select
+                        className="settings-text-input"
+                        value={fallbackLiveModel}
+                        onChange={(e) => updateFallbackLiveModel(e.target.value)}
+                        style={{ width: '100%', padding: '8px 12px', background: 'rgba(0, 0, 0, 0.45)', color: '#fff', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: '6px' }}
+                      >
+                        <option value="gemini-3.5-flash-lite" style={{ background: '#1e293b' }}>Gemini 3.5 Flash-Lite (Recommended)</option>
+                        <option value="gemini-3.8-flash" style={{ background: '#1e293b' }}>Gemini 3.8 Flash</option>
+                        <option value="none" style={{ background: '#1e293b' }}>None (Disable Fallback)</option>
+                      </select>
+                    </div>
+
+                    {/* 5. Automatic 429 Rate-Limit Fallback Switch */}
+                    <div className="settings-section-card" style={{ marginTop: '14px', background: 'rgba(255, 255, 255, 0.03)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px' }}>
+                      <div>
+                        <div style={{ fontSize: '12.5px', fontWeight: 600, color: '#f1f5f9', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <Zap size={14} style={{ color: '#ff5a36' }} />
+                          <span>Automatic 429 Rate-Limit Fallback</span>
                         </div>
-                        <div
-                          className={`provider-grid-item ${voiceProvider === 'sarvam' ? 'active' : ''}`}
-                          onClick={() => updateVoiceProvider('sarvam')}
-                        >
-                          <Volume2 size={16} />
-                          <span className="provider-grid-item-label">Sarvam AI</span>
-                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Multilingual Indian Accents</span>
+                        <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                          Automatically failover to secondary model upon receiving HTTP 429 rate limit or quota exhaustion.
                         </div>
                       </div>
+                      <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px' }}>
+                        <input
+                          type="checkbox"
+                          checked={autoRateLimitFallback}
+                          onChange={(e) => updateAutoRateLimitFallback(e.target.checked)}
+                          style={{ width: '16px', height: '16px', accentColor: '#ff5a36', cursor: 'pointer' }}
+                        />
+                        <span style={{ fontSize: '11px', fontWeight: 600, color: autoRateLimitFallback ? '#4ade80' : '#94a3b8' }}>
+                          {autoRateLimitFallback ? 'ON' : 'OFF'}
+                        </span>
+                      </label>
                     </div>
 
                     {/* Audio Playback Test Button */}
-                    <div className="settings-section-card" style={{ marginTop: '14px', background: 'rgba(255, 255, 255, 0.03)' }}>
+                    <div className="settings-section-card" style={{ marginTop: '12px', background: 'rgba(255, 255, 255, 0.03)', padding: '12px 14px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <div>
                           <div style={{ fontSize: '12.5px', fontWeight: 600, color: '#f1f5f9' }}>Speaker Output Diagnostic</div>
@@ -4421,15 +4774,23 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                       testDisabled={pingTesting}
                     />
 
-                    {/* Google Cloud Vertex AI (Project ID + Location, NO JSON file) */}
+                    {/* Google Cloud Vertex AI (Service Account JSON & Project ID / Location) */}
                     <div className="settings-section-card settings-key-card">
                       <div className="settings-input-header">
                         <label className="settings-label">
                           <Cloud size={14} style={{ color: '#60a5fa' }} />
                           <span>Google Cloud Vertex AI</span>
-                          {Boolean(vertexProjectId && vertexProjectId.trim()) ? (
+                          {vertexParsedSa?.valid ? (
+                            <span className="key-badge-configured" style={{ fontSize: '10px' }}>
+                              <Check size={10} /> Valid Service Account (Project: {vertexParsedSa.projectId}, Email: {vertexParsedSa.clientEmail})
+                            </span>
+                          ) : Boolean(vertexProjectId && vertexProjectId.trim()) ? (
                             <span className="key-badge-configured">
-                              <Check size={10} /> Configured
+                              <Check size={10} /> Project Configured ({vertexProjectId})
+                            </span>
+                          ) : Boolean(vertexServiceAccountJson.trim()) ? (
+                            <span className="key-badge-unconfigured" style={{ color: '#ef4444' }}>
+                              Invalid Service Account JSON
                             </span>
                           ) : (
                             <span className="key-badge-unconfigured">Not set</span>
@@ -4440,16 +4801,19 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                             type="button"
                             className="settings-btn-action"
                             style={{ padding: '2px 8px', fontSize: '10px' }}
-                            onClick={() => void handleTestPing('vertex', geminiApiKey, agent1Model, undefined, vertexProjectId)}
-                            disabled={pingTesting || !vertexProjectId.trim()}
+                            onClick={() => void handleTestPing('vertex', geminiApiKey, agent1Model, undefined, vertexProjectId, vertexServiceAccountJson)}
+                            disabled={pingTesting || (!vertexProjectId.trim() && !vertexParsedSa?.valid)}
                           >
                             Test ⚡
                           </button>
-                          {Boolean(vertexProjectId && vertexProjectId.trim()) && (
+                          {(Boolean(vertexProjectId && vertexProjectId.trim()) || Boolean(vertexServiceAccountJson.trim())) && (
                             <button
                               type="button"
                               className="key-btn-clear"
-                              onClick={() => updateVertexProjectId('')}
+                              onClick={() => {
+                                updateVertexProjectId('');
+                                updateVertexServiceAccountJson('');
+                              }}
                             >
                               Clear
                             </button>
@@ -4460,7 +4824,7 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                         <input
                           type="text"
                           className="settings-text-input"
-                          placeholder="Project ID (e.g. rising-fact-p41fc)..."
+                          placeholder="Project ID override (e.g. rising-fact-p41fc)..."
                           value={vertexProjectId}
                           onChange={(e) => updateVertexProjectId(e.target.value)}
                           style={{ flex: 2 }}
@@ -4477,8 +4841,32 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                           <option value="asia-northeast1" style={{ background: '#1e293b' }}>asia-northeast1</option>
                         </select>
                       </div>
-                      <p className="settings-help-text">
-                        Project ID for Google Cloud Vertex AI enterprise model routing. No JSON service account file required.
+
+                      {/* Service Account JSON Textarea */}
+                      <div style={{ marginTop: '8px' }}>
+                        <label style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', display: 'block' }}>
+                          Service Account Key JSON (optional · auto-populates Project ID &amp; verifies credentials)
+                        </label>
+                        <textarea
+                          className="settings-text-input"
+                          rows={3}
+                          placeholder='{"type": "service_account", "project_id": "my-gcp-project", "client_email": "service-account@...", "private_key": "..."}'
+                          value={vertexServiceAccountJson}
+                          onChange={(e) => updateVertexServiceAccountJson(e.target.value)}
+                          style={{
+                            width: '100%',
+                            fontFamily: 'monospace',
+                            fontSize: '11px',
+                            resize: 'vertical',
+                            background: 'rgba(0, 0, 0, 0.25)',
+                            border: vertexParsedSa && !vertexParsedSa.valid ? '1px solid #ef4444' : '1px solid rgba(255, 255, 255, 0.12)',
+                            borderRadius: '6px',
+                            padding: '8px',
+                          }}
+                        />
+                      </div>
+                      <p className="settings-help-text" style={{ marginTop: '6px' }}>
+                        Enter your Google Cloud Project ID or paste a Service Account JSON for enterprise Vertex AI routing.
                       </p>
                     </div>
 
