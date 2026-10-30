@@ -21,8 +21,8 @@ impl GeminiProvider {
             .build()
             .unwrap_or_default();
 
-        // gemini-2.5-flash was retired/deprecated; gemini-2.0-flash is current
-        let model_name = model.unwrap_or_else(|| "gemini-2.0-flash".to_string());
+        // gemini-2.5-flash was retired/deprecated; gemini-3.8-flash is current
+        let model_name = model.unwrap_or_else(|| "gemini-3.8-flash".to_string());
 
         Self {
             client,

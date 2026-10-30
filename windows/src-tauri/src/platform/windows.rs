@@ -543,6 +543,7 @@ pub fn configure_overlay_passthrough(window: &WebviewWindow) {
     };
 
     let _ = window.set_fullscreen(false);
+    let _ = window.set_ignore_cursor_events(true);
 
     let monitor = window
         .current_monitor()

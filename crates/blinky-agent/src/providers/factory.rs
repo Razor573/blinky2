@@ -118,19 +118,38 @@ pub fn create_provider_from_env() -> Result<Arc<dyn AiProvider>> {
             info!("Instantiating Ollama AI Provider (model: {:?})", model_override);
             Ok(Arc::new(OllamaProvider::new(base_url, model_override)))
         }
-        "openai" | "custom" | "deepseek" => {
+        "openai" => {
             let base_url = std::env::var("OPENAI_BASE_URL")
-                .or_else(|_| std::env::var("CUSTOM_AI_BASE_URL"))
                 .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-            let api_key = std::env::var("OPENAI_API_KEY")
-                .or_else(|_| std::env::var("CUSTOM_AI_KEY"))
-                .unwrap_or_default();
+            let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
             if api_key.trim().is_empty() {
-                bail!("No provider key configured for '{}', add one in Settings", provider_key);
+                bail!("No provider key configured for 'openai', add one in Settings");
             }
             let model = model_override.unwrap_or_else(|| "gpt-4o-mini".to_string());
-            info!("Instantiating OpenAI-compatible Provider at {} (model: {})", base_url, model);
+            info!("Instantiating OpenAI Provider at {} (model: {})", base_url, model);
             Ok(Arc::new(OpenAiCompatibleProvider::new(base_url, api_key, model, "openai")))
+        }
+        "anthropic" => {
+            let base_url = std::env::var("ANTHROPIC_BASE_URL")
+                .unwrap_or_else(|_| "https://api.anthropic.com/v1".to_string());
+            let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+            if api_key.trim().is_empty() {
+                bail!("No provider key configured for 'anthropic', add one in Settings");
+            }
+            let model = model_override.unwrap_or_else(|| "claude-haiku-4-5-20251001".to_string());
+            info!("Instantiating Anthropic Provider at {} (model: {})", base_url, model);
+            Ok(Arc::new(OpenAiCompatibleProvider::new(base_url, api_key, model, "anthropic")))
+        }
+        "custom" | "deepseek" => {
+            let base_url = std::env::var("CUSTOM_AI_BASE_URL")
+                .or_else(|_| std::env::var("OPENAI_BASE_URL"))
+                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+            let api_key = std::env::var("CUSTOM_AI_KEY")
+                .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                .unwrap_or_default();
+            let model = model_override.unwrap_or_else(|| "custom".to_string());
+            info!("Instantiating OpenAI-compatible Provider at {} (model: {})", base_url, model);
+            Ok(Arc::new(OpenAiCompatibleProvider::new(base_url, api_key, model, "custom")))
         }
         other => {
             bail!("Unknown provider '{}'. Add one in Settings.", other)

@@ -20,9 +20,9 @@ import { runTutor, cancelTutor, showOverlay, hideOverlay, resizeCommandWindow, s
 import { linkCitationMarkers, preprocessMarkdown } from './lib/citations';
 import {
   fetchDynamicModels,
+  getCuratedCatalog,
+  CUE_GEMINI_CATALOG,
   type DynamicModelItem,
-  DEFAULT_GROQ_CATALOG,
-  DEFAULT_GEMINI_CATALOG,
 } from './lib/modelCatalog';
 import { getSarvamErrorMessage } from './lib/tts';
 import { SarvamSpeechToTextStream, SarvamTextToSpeechStream } from './lib/sarvamStream';
@@ -371,6 +371,20 @@ export function CommandBar() {
   const [openaiApiKey, setOpenaiApiKey] = useState<string>(() => {
     return localStorage.getItem('clinky_openai_api_key') || '';
   });
+  const [anthropicApiKey, setAnthropicApiKey] = useState<string>(() => {
+    return localStorage.getItem('clinky_anthropic_api_key') || '';
+  });
+
+  const updateAnthropicApiKey = (val: string) => {
+    const clean = val.trim();
+    setAnthropicApiKey(clean);
+    if (clean) {
+      localStorage.setItem('clinky_anthropic_api_key', clean);
+    } else {
+      localStorage.removeItem('clinky_anthropic_api_key');
+    }
+    void persistAllSettings({ anthropicApiKey: clean });
+  };
 
   const updateVertexProjectId = (val: string) => {
     const clean = val.trim();
@@ -414,20 +428,41 @@ export function CommandBar() {
 
   // Agent 1: Computer-Use / Actuator
   const [agent1Model, setAgent1Model] = useState<string>(() => {
-    return localStorage.getItem('blinky_agent1_model') || 'qwen/qwen3.8-27b';
+    return localStorage.getItem('blinky_agent1_model') || 'gemini-3.8-flash';
   });
   const [agent1SearchQuery, setAgent1SearchQuery] = useState<string>('');
   const [isAgent1SearchOpen, setIsAgent1SearchOpen] = useState<boolean>(false);
   const [showAgent1Config, setShowAgent1Config] = useState<boolean>(false);
-  const [agent1ModelsList, setAgent1ModelsList] = useState<DynamicModelItem[]>(DEFAULT_GROQ_CATALOG);
+  const [agent1ModelsList, setAgent1ModelsList] = useState<DynamicModelItem[]>(getCuratedCatalog('gemini'));
   const [agent1ModelsLoading, setAgent1ModelsLoading] = useState<boolean>(false);
   const agent1FetchSeqRef = useRef<number>(0);
+
+  const getProviderKey = (prov: string) => {
+    switch (prov.toLowerCase().trim()) {
+      case 'gemini':
+      case 'google':
+        return geminiApiKey;
+      case 'openai':
+        return openaiApiKey;
+      case 'anthropic':
+        return anthropicApiKey;
+      case 'custom':
+        return customApiKey;
+      case 'groq':
+        return groqApiKey;
+      case 'deepseek':
+        return deepseekApiKey;
+      default:
+        return '';
+    }
+  };
 
   const updateAgent1Model = (newModel: string) => {
     const clean = newModel.trim();
     if (!clean) return;
     setAgent1Model(clean);
     localStorage.setItem('blinky_agent1_model', clean);
+    void persistAllSettings({ modelName: clean });
     if (provider.toLowerCase().trim() === 'custom') {
       void updateCustomModel(clean);
     }
@@ -435,16 +470,14 @@ export function CommandBar() {
 
   const refreshAgent1Models = async (
     prov = provider,
-    gKey = groqApiKey,
-    dKey = deepseekApiKey,
-    cUrl = customUrl,
-    cKey = customApiKey
+    overrideKey?: string,
+    overrideUrl = customUrl
   ) => {
     const seq = ++agent1FetchSeqRef.current;
     setAgent1ModelsLoading(true);
-    const key = prov === 'groq' ? gKey : prov === 'deepseek' ? dKey : prov === 'custom' ? cKey : '';
+    const key = overrideKey !== undefined ? overrideKey : getProviderKey(prov);
     try {
-      const res = await fetchDynamicModels(prov, key, cUrl);
+      const res = await fetchDynamicModels(prov, key, overrideUrl);
       if (seq === agent1FetchSeqRef.current && res.models && res.models.length > 0) {
         setAgent1ModelsList(res.models);
       }
@@ -460,7 +493,7 @@ export function CommandBar() {
   // Agent 2: Knowledge & RAG (Gemini) Model Configuration & Search
   const [geminiModel, setGeminiModel] = useState<string>(() => {
     const saved = localStorage.getItem('blinky_gemini_model');
-    return (saved && saved !== 'gemini-2.5-flash') ? saved : 'gemini-2.0-flash';
+    return (saved && !saved.includes('2.0') && !saved.includes('2.5')) ? saved : 'gemini-3.8-flash';
   });
   const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
     return localStorage.getItem('blinky_gemini_api_key') || '';
@@ -468,7 +501,7 @@ export function CommandBar() {
   const [geminiSearchQuery, setGeminiSearchQuery] = useState<string>('');
   const [isGeminiSearchOpen, setIsGeminiSearchOpen] = useState<boolean>(false);
   const [showGeminiConfig, setShowGeminiConfig] = useState<boolean>(false);
-  const [geminiModelsList, setGeminiModelsList] = useState<DynamicModelItem[]>(DEFAULT_GEMINI_CATALOG);
+  const [geminiModelsList, setGeminiModelsList] = useState<DynamicModelItem[]>(CUE_GEMINI_CATALOG);
   const [geminiModelsLoading, setGeminiModelsLoading] = useState<boolean>(false);
   const geminiFetchSeqRef = useRef<number>(0);
   const [settingsTab, setSettingsTab] = useState<'agents' | 'keys' | 'mobile' | 'shortcuts' | 'about'>('agents');
@@ -481,11 +514,13 @@ export function CommandBar() {
   };
 
   const updateGeminiApiKey = (newKey: string) => {
-    setGeminiApiKey(newKey);
-    localStorage.setItem('blinky_gemini_api_key', newKey);
-    if (newKey.trim().length > 10) {
-      void refreshGeminiModels(newKey);
+    const clean = newKey.trim();
+    setGeminiApiKey(clean);
+    localStorage.setItem('blinky_gemini_api_key', clean);
+    if (clean.length > 10) {
+      void refreshGeminiModels(clean);
     }
+    void persistAllSettings({ geminiApiKey: clean });
   };
 
   const refreshGeminiModels = async (key = geminiApiKey) => {
@@ -575,8 +610,13 @@ export function CommandBar() {
         if (s.custom_api_key) setCustomApiKey(s.custom_api_key);
 
         const prov = s.provider || 'gemini';
-        void refreshAgent1Models(prov, s.groq_api_key, s.deepseek_api_key, s.custom_url, s.custom_api_key);
-        void refreshGeminiModels(geminiApiKey);
+        if (s.gemini_api_key) setGeminiApiKey(s.gemini_api_key);
+        if (s.openai_api_key) setOpenaiApiKey(s.openai_api_key);
+        if (s.anthropic_api_key) setAnthropicApiKey(s.anthropic_api_key);
+        if (s.vertex_project_id) setVertexProjectId(s.vertex_project_id);
+        if (s.model_name) setAgent1Model(s.model_name);
+        void refreshAgent1Models(prov);
+        void refreshGeminiModels(s.gemini_api_key || geminiApiKey);
       } catch (err) {
         console.error('Failed to load initial settings in CommandBar:', err);
       }
@@ -2150,6 +2190,46 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
   }, [isRunning, isRecording, isSpeaking, isTtsActive]);
 
 
+  const persistAllSettings = async (overrides: Record<string, string> = {}) => {
+    const prov = overrides.provider ?? provider;
+    const sc = overrides.shortcut ?? shortcut;
+    const sarvam = overrides.sarvamApiKey ?? sarvamApiKey;
+    const groq = overrides.groqApiKey ?? groqApiKey;
+    const deepseek = overrides.deepseekApiKey ?? deepseekApiKey;
+    const cUrl = overrides.customUrl ?? customUrl;
+    const cModel = overrides.customModel ?? customModel;
+    const cKey = overrides.customApiKey ?? customApiKey;
+    const aai = overrides.assemblyaiApiKey ?? assemblyaiApiKey;
+    const vProv = overrides.voiceProvider ?? voiceProvider;
+    const gemini = overrides.geminiApiKey ?? geminiApiKey;
+    const oai = overrides.openaiApiKey ?? openaiApiKey;
+    const anth = overrides.anthropicApiKey ?? anthropicApiKey;
+    const vtx = overrides.vertexProjectId ?? vertexProjectId;
+    const mdl = overrides.modelName ?? agent1Model;
+
+    try {
+      await saveSettings(
+        prov,
+        sc,
+        sarvam,
+        groq,
+        deepseek,
+        cUrl,
+        cModel,
+        cKey,
+        aai,
+        vProv,
+        gemini,
+        oai,
+        anth,
+        vtx,
+        mdl
+      );
+    } catch (err) {
+      console.error('Failed to persist settings:', err);
+    }
+  };
+
   const updateVoiceProvider = async (newVoiceProvider: 'assemblyai' | 'sarvam') => {
     setVoiceProvider(newVoiceProvider);
     voiceProviderRef.current = newVoiceProvider;
@@ -2196,23 +2276,15 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
   const updateProvider = async (newProvider: string) => {
     const cleanProvider = newProvider.toLowerCase().trim();
     setProvider(cleanProvider);
-    void refreshAgent1Models(cleanProvider, groqApiKey, deepseekApiKey, customUrl, customApiKey);
-    try {
-      await saveSettings(
-        cleanProvider,
-        shortcut,
-        sarvamApiKey,
-        groqApiKey,
-        deepseekApiKey,
-        customUrl,
-        customModel,
-        customApiKey,
-        assemblyaiApiKey,
-        voiceProvider
-      );
-    } catch (err) {
-      console.error('Failed to save provider:', err);
+    localStorage.setItem('blinky_ai_provider', cleanProvider);
+    // Fetch live models for the chosen provider immediately
+    void refreshAgent1Models(cleanProvider);
+    // Switch to provider default model if current model does not match
+    const catalog = getCuratedCatalog(cleanProvider);
+    if (catalog.length > 0 && !catalog.some((m) => m.id === agent1Model)) {
+      updateAgent1Model(catalog[0].id);
     }
+    void persistAllSettings({ provider: cleanProvider });
   };
 
   const updateShortcut = async (newShortcut: string) => {
@@ -2259,7 +2331,7 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
   const updateGroqApiKey = async (newKey: string) => {
     setGroqApiKey(newKey);
     if (newKey.trim().length > 10) {
-      void refreshAgent1Models('groq', newKey, deepseekApiKey, customUrl, customApiKey);
+      void refreshAgent1Models('groq', newKey);
     }
     try {
       await saveSettings(
@@ -2282,7 +2354,7 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
   const updateDeepseekApiKey = async (newKey: string) => {
     setDeepseekApiKey(newKey);
     if (newKey.trim().length > 10) {
-      void refreshAgent1Models('deepseek', groqApiKey, newKey, customUrl, customApiKey);
+      void refreshAgent1Models('deepseek', newKey);
     }
     try {
       await saveSettings(
@@ -2304,7 +2376,7 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
 
   const updateCustomUrl = async (newUrl: string) => {
     setCustomUrl(newUrl);
-    void refreshAgent1Models('custom', groqApiKey, deepseekApiKey, newUrl, customApiKey);
+    void refreshAgent1Models('custom', customApiKey, newUrl);
     try {
       await saveSettings(
         provider,
@@ -3582,27 +3654,62 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
 
                       <div className="settings-input-group">
                         <label className="settings-label">Backend Actuator Provider</label>
-                        <div className="settings-provider-grid">
+                        <div className="settings-provider-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
                           <div
-                            className={`provider-grid-item ${provider === 'groq' ? 'active' : ''}`}
-                            onClick={() => updateProvider('groq')}
+                            className={`provider-grid-item ${provider === 'gemini' ? 'active' : ''}`}
+                            onClick={() => void updateProvider('gemini')}
                           >
-                            <Zap size={15} />
-                            <span className="provider-grid-item-label">Groq Llama/Qwen</span>
+                            <Brain size={15} style={{ color: '#c084fc' }} />
+                            <span className="provider-grid-item-label">Google Gemini</span>
                           </div>
                           <div
-                            className={`provider-grid-item ${provider === 'deepseek' ? 'active' : ''}`}
-                            onClick={() => updateProvider('deepseek')}
+                            className={`provider-grid-item ${provider === 'vertex' ? 'active' : ''}`}
+                            onClick={() => void updateProvider('vertex')}
                           >
-                            <Brain size={15} />
-                            <span className="provider-grid-item-label">DeepSeek V3</span>
+                            <Cloud size={15} style={{ color: '#60a5fa' }} />
+                            <span className="provider-grid-item-label">Vertex AI</span>
+                          </div>
+                          <div
+                            className={`provider-grid-item ${provider === 'antigravity' ? 'active' : ''}`}
+                            onClick={() => void updateProvider('antigravity')}
+                          >
+                            <Sparkles size={15} style={{ color: '#38bdf8' }} />
+                            <span className="provider-grid-item-label">Antigravity</span>
+                          </div>
+                          <div
+                            className={`provider-grid-item ${provider === 'codex' ? 'active' : ''}`}
+                            onClick={() => void updateProvider('codex')}
+                          >
+                            <Cpu size={15} style={{ color: '#10b981' }} />
+                            <span className="provider-grid-item-label">OpenAI Codex</span>
+                          </div>
+                          <div
+                            className={`provider-grid-item ${provider === 'openai' ? 'active' : ''}`}
+                            onClick={() => void updateProvider('openai')}
+                          >
+                            <Sparkles size={15} style={{ color: '#34d399' }} />
+                            <span className="provider-grid-item-label">OpenAI</span>
+                          </div>
+                          <div
+                            className={`provider-grid-item ${provider === 'anthropic' ? 'active' : ''}`}
+                            onClick={() => void updateProvider('anthropic')}
+                          >
+                            <Brain size={15} style={{ color: '#f97316' }} />
+                            <span className="provider-grid-item-label">Anthropic</span>
                           </div>
                           <div
                             className={`provider-grid-item ${provider === 'custom' ? 'active' : ''}`}
-                            onClick={() => updateProvider('custom')}
+                            onClick={() => void updateProvider('custom')}
                           >
-                            <Wrench size={15} />
+                            <Wrench size={15} style={{ color: '#e2e8f0' }} />
                             <span className="provider-grid-item-label">Custom API</span>
+                          </div>
+                          <div
+                            className={`provider-grid-item ${provider === 'ollama' ? 'active' : ''}`}
+                            onClick={() => void updateProvider('ollama')}
+                          >
+                            <Cpu size={15} style={{ color: '#fbbf24' }} />
+                            <span className="provider-grid-item-label">Ollama (Local)</span>
                           </div>
                         </div>
                       </div>
@@ -3641,7 +3748,7 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                               <button
                                 type="button"
                                 className="settings-btn-action settings-btn-secondary"
-                                onClick={() => handleTestPing(provider, provider === 'groq' ? groqApiKey : provider === 'deepseek' ? deepseekApiKey : customApiKey, agent1Model, customUrl)}
+                                onClick={() => void handleTestPing(provider, getProviderKey(provider), agent1Model, customUrl)}
                                 disabled={pingTesting}
                               >
                                 ⚡ Ping
@@ -3654,18 +3761,34 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                               <input
                                 type="text"
                                 className="settings-text-input"
-                                placeholder="Search models (e.g. qwen, llama, deepseek)..."
+                                placeholder={`Search or type custom model for ${provider}...`}
                                 value={agent1SearchQuery}
                                 onChange={(e) => setAgent1SearchQuery(e.target.value)}
                                 autoFocus
                               />
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px', maxHeight: '240px', overflowY: 'auto' }}>
+                                {agent1SearchQuery.trim() && !agent1ModelsList.some((m) => m.id.toLowerCase() === agent1SearchQuery.trim().toLowerCase()) && (
+                                  <div
+                                    className="settings-search-item"
+                                    style={{ borderBottom: '1px dashed rgba(255, 255, 255, 0.15)' }}
+                                    onClick={() => {
+                                      updateAgent1Model(agent1SearchQuery.trim());
+                                      setIsAgent1SearchOpen(false);
+                                    }}
+                                  >
+                                    <div>
+                                      <div style={{ fontWeight: 600, color: '#38bdf8' }}>Use custom model: "{agent1SearchQuery.trim()}"</div>
+                                      <div style={{ fontSize: '10px', color: '#94a3b8' }}>Click to apply custom model slug</div>
+                                    </div>
+                                    <Plus size={14} style={{ color: '#38bdf8' }} />
+                                  </div>
+                                )}
                                 {agent1ModelsList
                                   .filter((m) =>
                                     m.id.toLowerCase().includes(agent1SearchQuery.toLowerCase()) ||
                                     (m.name && m.name.toLowerCase().includes(agent1SearchQuery.toLowerCase()))
                                   )
-                                  .slice(0, 15)
+                                  .slice(0, 30)
                                   .map((m) => (
                                     <div
                                       key={m.id}
@@ -3857,6 +3980,20 @@ let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!
                       onSave={(val) => updateOpenaiApiKey(val)}
                       onClear={() => updateOpenaiApiKey('')}
                       description="Enables OpenAI Codex and GPT reasoning models."
+                      testAction={() => void handleTestPing('openai', openaiApiKey, 'gpt-4o-mini')}
+                      testDisabled={pingTesting}
+                    />
+
+                    <MaskedKeyInput
+                      label="Anthropic Claude API Key"
+                      envName="ANTHROPIC_API_KEY"
+                      icon={<Brain size={14} style={{ color: '#f97316' }} />}
+                      isConfigured={Boolean(anthropicApiKey && anthropicApiKey.trim())}
+                      onSave={(val) => updateAnthropicApiKey(val)}
+                      onClear={() => updateAnthropicApiKey('')}
+                      description="Enables Claude 4.5 Sonnet and Haiku model calls."
+                      testAction={() => void handleTestPing('anthropic', anthropicApiKey, 'claude-haiku-4-5-20251001')}
+                      testDisabled={pingTesting}
                     />
 
                     <MaskedKeyInput

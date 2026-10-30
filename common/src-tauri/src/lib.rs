@@ -489,9 +489,14 @@ struct BlinkySettings {
     assemblyai_api_key: String,
     groq_api_key: String,
     deepseek_api_key: String,
+    gemini_api_key: String,
+    openai_api_key: String,
+    anthropic_api_key: String,
+    vertex_project_id: String,
     custom_url: String,
     custom_model: String,
     custom_api_key: String,
+    model_name: String,
 }
 
 #[tauri::command]
@@ -509,6 +514,11 @@ async fn get_settings(app: AppHandle) -> Result<BlinkySettings, String> {
     let mut custom_url = "".to_string();
     let mut custom_model = "".to_string();
     let mut custom_api_key = "".to_string();
+    let mut gemini_api_key = "".to_string();
+    let mut openai_api_key = "".to_string();
+    let mut anthropic_api_key = "".to_string();
+    let mut vertex_project_id = "".to_string();
+    let mut model_name = "".to_string();
 
     for (key, val) in env_vars {
         if key == "BLINKY_AI_PROVIDER" {
@@ -531,6 +541,16 @@ async fn get_settings(app: AppHandle) -> Result<BlinkySettings, String> {
             custom_model = val;
         } else if key == "CUSTOM_API_KEY" {
             custom_api_key = val;
+        } else if key == "GEMINI_API_KEY" || key == "GOOGLE_API_KEY" {
+            gemini_api_key = val;
+        } else if key == "OPENAI_API_KEY" {
+            openai_api_key = val;
+        } else if key == "ANTHROPIC_API_KEY" {
+            anthropic_api_key = val;
+        } else if key == "VERTEX_PROJECT_ID" || key == "GOOGLE_CLOUD_PROJECT" {
+            vertex_project_id = val;
+        } else if key == "BLINKY_AI_MODEL" || key == "FLICKY_AI_MODEL" {
+            model_name = val;
         }
     }
 
@@ -542,9 +562,14 @@ async fn get_settings(app: AppHandle) -> Result<BlinkySettings, String> {
         assemblyai_api_key,
         groq_api_key,
         deepseek_api_key,
+        gemini_api_key,
+        openai_api_key,
+        anthropic_api_key,
+        vertex_project_id,
         custom_url,
         custom_model,
         custom_api_key,
+        model_name,
     })
 }
 
@@ -561,6 +586,11 @@ async fn save_settings(
     custom_url: String,
     custom_model: String,
     custom_api_key: String,
+    gemini_api_key: Option<String>,
+    openai_api_key: Option<String>,
+    anthropic_api_key: Option<String>,
+    vertex_project_id: Option<String>,
+    model_name: Option<String>,
 ) -> Result<(), String> {
     let root = project_root(&app)?;
     ensure_env_file(&root);
@@ -579,6 +609,16 @@ async fn save_settings(
     let mut custom_url_found = false;
     let mut custom_model_found = false;
     let mut custom_api_key_found = false;
+    let mut gemini_found = false;
+    let mut openai_found = false;
+    let mut anthropic_found = false;
+    let mut vertex_found = false;
+    let mut model_found = false;
+    let gem_key = gemini_api_key.unwrap_or_default();
+    let oai_key = openai_api_key.unwrap_or_default();
+    let ant_key = anthropic_api_key.unwrap_or_default();
+    let vtx_proj = vertex_project_id.unwrap_or_default();
+    let mdl_name = model_name.unwrap_or_default();
 
     let aai_key = assemblyai_api_key.unwrap_or_default();
     let v_provider = voice_provider.unwrap_or_else(|| "assemblyai".to_string());
@@ -615,6 +655,21 @@ async fn save_settings(
         } else if trimmed.starts_with("CUSTOM_API_KEY=") {
             *line = format!("CUSTOM_API_KEY={}", custom_api_key);
             custom_api_key_found = true;
+        } else if trimmed.starts_with("GEMINI_API_KEY=") || trimmed.starts_with("GOOGLE_API_KEY=") {
+            *line = format!("GEMINI_API_KEY={}", gem_key);
+            gemini_found = true;
+        } else if trimmed.starts_with("OPENAI_API_KEY=") {
+            *line = format!("OPENAI_API_KEY={}", oai_key);
+            openai_found = true;
+        } else if trimmed.starts_with("ANTHROPIC_API_KEY=") {
+            *line = format!("ANTHROPIC_API_KEY={}", ant_key);
+            anthropic_found = true;
+        } else if trimmed.starts_with("VERTEX_PROJECT_ID=") || trimmed.starts_with("GOOGLE_CLOUD_PROJECT=") {
+            *line = format!("VERTEX_PROJECT_ID={}", vtx_proj);
+            vertex_found = true;
+        } else if trimmed.starts_with("BLINKY_AI_MODEL=") || trimmed.starts_with("FLICKY_AI_MODEL=") {
+            *line = format!("BLINKY_AI_MODEL={}", mdl_name);
+            model_found = true;
         }
     }
 
@@ -647,6 +702,21 @@ async fn save_settings(
     }
     if !custom_api_key_found {
         lines.push(format!("CUSTOM_API_KEY={}", custom_api_key));
+    }
+    if !gemini_found && !gem_key.is_empty() {
+        lines.push(format!("GEMINI_API_KEY={}", gem_key));
+    }
+    if !openai_found && !oai_key.is_empty() {
+        lines.push(format!("OPENAI_API_KEY={}", oai_key));
+    }
+    if !anthropic_found && !ant_key.is_empty() {
+        lines.push(format!("ANTHROPIC_API_KEY={}", ant_key));
+    }
+    if !vertex_found && !vtx_proj.is_empty() {
+        lines.push(format!("VERTEX_PROJECT_ID={}", vtx_proj));
+    }
+    if !model_found && !mdl_name.is_empty() {
+        lines.push(format!("BLINKY_AI_MODEL={}", mdl_name));
     }
 
     let new_contents = lines.join("\n") + "\n";

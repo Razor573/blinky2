@@ -8,10 +8,6 @@ export interface PingResult {
   details?: string;
 }
 
-/**
- * Executes a 1-token health check probe against the selected AI provider.
- * Catches decommissioned models (404), invalid keys (401), and rate limits (429) in real time.
- */
 export async function pingModel(
   provider: string,
   apiKey: string,
@@ -19,11 +15,12 @@ export async function pingModel(
   customUrl?: string
 ): Promise<PingResult> {
   const t0 = Date.now();
-  const prov = (provider || 'groq').toLowerCase().trim();
+  const prov = (provider || 'gemini').toLowerCase().trim();
 
   try {
-    if (prov === 'groq') {
-      const activeModel = model || 'qwen/qwen3.8-27b';
+    // 1. Google Gemini
+    if (prov === 'gemini' || prov === 'google') {
+      const activeModel = model || 'gemini-3.8-flash';
       if (!apiKey?.trim()) {
         return {
           ok: false,
@@ -31,12 +28,63 @@ export async function pingModel(
           model: activeModel,
           latency_ms: 0,
           status_code: 401,
-          error: 'Missing Groq API Key',
-          details: 'Please paste your Groq API key.',
+          error: 'Missing Gemini API Key',
+          details: 'Please enter your Google Gemini API key in Settings.',
         };
       }
 
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(activeModel)}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: 'ping' }] }],
+          generationConfig: { maxOutputTokens: 1, temperature: 0.0 },
+        }),
+      });
+
+      const latency = Date.now() - t0;
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        return {
+          ok: true,
+          provider: prov,
+          model: activeModel,
+          latency_ms: latency,
+          status_code: 200,
+          details: `Online (${latency}ms)`,
+        };
+      }
+
+      const errMsg = data?.error?.message || `HTTP ${res.status}`;
+      return {
+        ok: false,
+        provider: prov,
+        model: activeModel,
+        latency_ms: latency,
+        status_code: res.status,
+        error: errMsg,
+        details: res.status === 404 ? `Model not found or retired (${activeModel})` : errMsg,
+      };
+    }
+
+    // 2. OpenAI
+    if (prov === 'openai') {
+      const activeModel = model || 'gpt-4o-mini';
+      if (!apiKey?.trim()) {
+        return {
+          ok: false,
+          provider: prov,
+          model: activeModel,
+          latency_ms: 0,
+          status_code: 401,
+          error: 'Missing OpenAI API Key',
+          details: 'Please enter your OpenAI API key in Settings.',
+        };
+      }
+
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey.trim()}`,
@@ -71,12 +119,13 @@ export async function pingModel(
         latency_ms: latency,
         status_code: res.status,
         error: errMsg,
-        details: res.status === 404 ? `Model decommissioned or not found (${activeModel})` : errMsg,
+        details: res.status === 404 ? `Model not found (${activeModel})` : errMsg,
       };
     }
 
-    if (prov === 'deepseek') {
-      const activeModel = model || 'deepseek-chat';
+    // 3. Anthropic
+    if (prov === 'anthropic') {
+      const activeModel = model || 'claude-haiku-4-5-20251001';
       if (!apiKey?.trim()) {
         return {
           ok: false,
@@ -84,15 +133,16 @@ export async function pingModel(
           model: activeModel,
           latency_ms: 0,
           status_code: 401,
-          error: 'Missing DeepSeek API Key',
-          details: 'Please paste your DeepSeek API key.',
+          error: 'Missing Anthropic API Key',
+          details: 'Please enter your Anthropic API key in Settings.',
         };
       }
 
-      const res = await fetch('https://api.deepseek.com/chat/completions', {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${apiKey.trim()}`,
+          'x-api-key': apiKey.trim(),
+          'anthropic-version': '2023-06-01',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -128,6 +178,34 @@ export async function pingModel(
       };
     }
 
+    // 4. Ollama
+    if (prov === 'ollama') {
+      const activeModel = model || 'qwen2.5:7b';
+      const base = (customUrl || 'http://localhost:11434').replace(/\/+$/, '');
+      const res = await fetch(`${base}/api/tags`);
+      const latency = Date.now() - t0;
+      if (res.ok) {
+        return {
+          ok: true,
+          provider: prov,
+          model: activeModel,
+          latency_ms: latency,
+          status_code: 200,
+          details: `Online (${latency}ms) • Local daemon`,
+        };
+      }
+      return {
+        ok: false,
+        provider: prov,
+        model: activeModel,
+        latency_ms: latency,
+        status_code: res.status,
+        error: `Ollama HTTP ${res.status}`,
+        details: 'Ollama local daemon did not respond.',
+      };
+    }
+
+    // 5. Custom OpenAI-compatible
     if (prov === 'custom') {
       const activeModel = model || 'default';
       const base = (customUrl || '').replace(/\/+$/, '');
@@ -182,80 +260,16 @@ export async function pingModel(
       };
     }
 
-    if (prov === 'gemini') {
-      const activeModel = model || 'gemini-2.5-flash';
-      if (!apiKey?.trim()) {
-        return {
-          ok: false,
-          provider: prov,
-          model: activeModel,
-          latency_ms: 0,
-          status_code: 401,
-          error: 'Missing Gemini API Key',
-          details: 'Please paste your Google Gemini API key.',
-        };
-      }
-
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(activeModel)}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: 'ping' }] }],
-          generationConfig: { maxOutputTokens: 1, temperature: 0.0 },
-        }),
-      });
-
+    // 6. Vertex, Antigravity, Codex (System / OAuth managed environments)
+    if (prov === 'vertex' || prov === 'antigravity' || prov === 'codex') {
       const latency = Date.now() - t0;
-      const data = await res.json().catch(() => ({}));
-
-      if (res.ok) {
-        return {
-          ok: true,
-          provider: prov,
-          model: activeModel,
-          latency_ms: latency,
-          status_code: 200,
-          details: `Online (${latency}ms)`,
-        };
-      }
-
-      const errMsg = data?.error?.message || `HTTP ${res.status}`;
       return {
-        ok: false,
+        ok: true,
         provider: prov,
-        model: activeModel,
+        model: model || 'default',
         latency_ms: latency,
-        status_code: res.status,
-        error: errMsg,
-        details: res.status === 404 ? `Model not found or unavailable (${activeModel})` : errMsg,
-      };
-    }
-
-    if (prov === 'ollama') {
-      const activeModel = model || 'qwen2.5:7b';
-      const base = (customUrl || 'http://localhost:11434').replace(/\/+$/, '');
-      const url = `${base}/api/tags`;
-      const res = await fetch(url);
-      const latency = Date.now() - t0;
-      if (res.ok) {
-        return {
-          ok: true,
-          provider: prov,
-          model: activeModel,
-          latency_ms: latency,
-          status_code: 200,
-          details: `Online (${latency}ms) • Ollama local daemon`,
-        };
-      }
-      return {
-        ok: false,
-        provider: prov,
-        model: activeModel,
-        latency_ms: latency,
-        status_code: res.status,
-        error: `Ollama HTTP ${res.status}`,
-        details: 'Ollama daemon responded with an error.',
+        status_code: 200,
+        details: `Configured (${prov})`,
       };
     }
 
@@ -266,7 +280,7 @@ export async function pingModel(
       latency_ms: 0,
       status_code: 400,
       error: `Unsupported provider: ${provider}`,
-      details: 'Supported: groq, gemini, ollama, deepseek, custom',
+      details: 'Supported: gemini, vertex, antigravity, codex, openai, anthropic, custom, ollama',
     };
   } catch (err: any) {
     return {

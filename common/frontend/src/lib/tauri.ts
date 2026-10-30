@@ -162,9 +162,14 @@ export interface BlinkySettings {
   assemblyai_api_key?: string;
   groq_api_key: string;
   deepseek_api_key: string;
+  gemini_api_key?: string;
+  openai_api_key?: string;
+  anthropic_api_key?: string;
+  vertex_project_id?: string;
   custom_url: string;
   custom_model: string;
   custom_api_key: string;
+  model_name?: string;
 }
 
 export async function getSettings(): Promise<BlinkySettings> {
@@ -181,7 +186,12 @@ export async function saveSettings(
   customModel: string = '',
   customApiKey: string = '',
   assemblyaiApiKey: string = '',
-  voiceProvider: string = 'assemblyai'
+  voiceProvider: string = 'assemblyai',
+  geminiApiKey: string = '',
+  openaiApiKey: string = '',
+  anthropicApiKey: string = '',
+  vertexProjectId: string = '',
+  modelName: string = ''
 ): Promise<void> {
   return invoke('save_settings', {
     provider,
@@ -193,7 +203,12 @@ export async function saveSettings(
     deepseekApiKey,
     customUrl,
     customModel,
-    customApiKey
+    customApiKey,
+    geminiApiKey,
+    openaiApiKey,
+    anthropicApiKey,
+    vertexProjectId,
+    modelName
   });
 }
 

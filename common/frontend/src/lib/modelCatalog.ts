@@ -3,77 +3,114 @@ export interface DynamicModelItem {
   name: string;
   desc?: string;
   badge?: string;
+  tier?: 'fast' | 'smart';
   isCustom?: boolean;
 }
 
-const DECOMMISSIONED_GROQ_MODELS = new Set([
-  'llama-3.3-70b-versatile',
-  'llama-3.2-90b-vision-preview',
-  'llama-3.2-11b-vision-preview',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'qwen/qwen3.6-27b',
-]);
-
-export const DEFAULT_GROQ_CATALOG: DynamicModelItem[] = [
-  { id: 'qwen/qwen3.8-27b', name: 'Qwen 3.8 27B', badge: 'Recommended Actuator', desc: 'Fast vision & OS computer-use actuator' },
-  { id: 'openai/gpt-oss-120b', name: 'GPT-OSS 120B', badge: 'Deep Reasoning', desc: 'Ultra-high reasoning capacity & coding' },
-  { id: 'openai/gpt-oss-20b', name: 'GPT-OSS 20B', badge: 'Ultra-Fast', desc: 'Sub-300ms speed for rapid actions' },
-  { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant', badge: 'Fast', desc: 'Low-latency small model' },
-  { id: 'deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 Distill 70B', badge: 'Thinking', desc: 'DeepSeek reasoning distilled on Groq' },
+export const CUE_GEMINI_CATALOG: DynamicModelItem[] = [
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', badge: 'Default Fast', desc: 'Current generation Flash model (Aug 2026)', tier: 'fast' },
+  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', badge: 'Fast', desc: 'High-speed multimodal reasoning', tier: 'fast' },
+  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', badge: 'Fast', desc: 'Fast multimodal', tier: 'fast' },
+  { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash', badge: 'Fast', desc: 'Balanced accuracy & speed', tier: 'fast' },
+  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash-Lite', badge: 'Ultra-Fast', desc: 'Quota-friendly low latency', tier: 'fast' },
+  { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash-Lite', badge: 'Lite', desc: 'Lightweight model', tier: 'fast' },
+  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview', badge: 'Smart', desc: 'Advanced reasoning model', tier: 'smart' },
+  { id: 'gemini-4-argon', name: 'Gemini 4 Argon', badge: 'Flagship', desc: 'Deep intelligence & long context', tier: 'smart' },
 ];
 
-export const DEFAULT_GEMINI_CATALOG: DynamicModelItem[] = [
-  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', badge: 'Recommended RAG', desc: 'Ultra-responsive document chunk synthesis & multimodal RAG' },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', badge: 'Flash', desc: 'Fast multimodal reasoning & high-volume RAG' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', badge: 'Deep Context', desc: 'Complex reasoning across 2M token context window' },
-  { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite', badge: 'Lite', desc: 'Lightweight & quota-friendly' },
-  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', badge: 'Stable', desc: 'Proven long-context workhorse' },
-  { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', badge: 'Pro Reasoning', desc: 'High capability multi-turn analysis' },
-  { id: 'gemini-flash-latest', name: 'Gemini Flash Latest', badge: 'Auto-Update', desc: 'Always points to the latest active Flash release' },
+export const CUE_VERTEX_CATALOG: DynamicModelItem[] = [
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', badge: 'Default Fast', desc: 'Vertex enterprise fast model', tier: 'fast' },
+  { id: 'gemini-4-argon', name: 'Gemini 4 Argon', badge: 'Smart', desc: 'Vertex enterprise deep reasoning', tier: 'smart' },
+  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview', badge: 'Pro', desc: 'Vertex enterprise preview', tier: 'smart' },
+];
+
+export const CUE_ANTIGRAVITY_CATALOG: DynamicModelItem[] = [
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', badge: 'Default Fast', desc: 'Google Antigravity fast tier', tier: 'fast' },
+  { id: 'gemini-3.1-pro-high', name: 'Gemini 3.1 Pro High', badge: 'Smart', desc: 'Google Antigravity high-reasoning tier', tier: 'smart' },
+  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', badge: 'Flash', desc: 'Fast inference', tier: 'fast' },
+];
+
+export const CUE_CODEX_CATALOG: DynamicModelItem[] = [
+  { id: 'gpt-5.5', name: 'GPT-5.5', badge: 'Fast', desc: 'Codex fast completion', tier: 'fast' },
+  { id: 'gpt-5.5-codex', name: 'GPT-5.5 Codex', badge: 'Default Smart', desc: 'Codex full reasoning', tier: 'smart' },
+  { id: 'gpt-5.4-codex', name: 'GPT-5.4 Codex', badge: 'Smart', desc: 'High capability code model', tier: 'smart' },
+  { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', badge: 'Codex', desc: 'Stable code intelligence', tier: 'smart' },
+];
+
+export const CUE_OPENAI_CATALOG: DynamicModelItem[] = [
+  { id: 'gpt-4o-mini', name: 'GPT-4o mini', badge: 'Default Fast', desc: 'Fast multimodal chat', tier: 'fast' },
+  { id: 'gpt-4.1-mini', name: 'GPT-4.1 mini', badge: 'Fast', desc: 'Next-gen mini reasoning', tier: 'fast' },
+  { id: 'gpt-4.1-nano', name: 'GPT-4.1 nano', badge: 'Ultra-Fast', desc: 'Lowest latency completion', tier: 'fast' },
+  { id: 'gpt-4o', name: 'GPT-4o', badge: 'Smart', desc: 'High capability flagship', tier: 'smart' },
+  { id: 'gpt-4.1', name: 'GPT-4.1', badge: 'Smart', desc: 'Advanced flagship reasoning', tier: 'smart' },
+  { id: 'o3-mini', name: 'o3-mini', badge: 'Reasoning', desc: 'Deep math and code reasoning', tier: 'smart' },
+];
+
+export const CUE_ANTHROPIC_CATALOG: DynamicModelItem[] = [
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', badge: 'Default Fast', desc: 'Ultra-fast Claude 4.5', tier: 'fast' },
+  { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', badge: 'Default Smart', desc: 'Top-tier code and vision reasoning', tier: 'smart' },
 ];
 
 export const DEFAULT_OLLAMA_CATALOG: DynamicModelItem[] = [
-  { id: 'qwen2.5:7b', name: 'Qwen 2.5 7B', badge: 'Recommended', desc: 'Local instruction-following model' },
-  { id: 'llama3.2:latest', name: 'Llama 3.2', badge: 'Fast Local', desc: 'Lightweight local model' },
-  { id: 'deepseek-r1:8b', name: 'DeepSeek R1 8B', badge: 'Local Reasoning', desc: 'Local reasoning model' },
-  { id: 'mistral:latest', name: 'Mistral 7B', badge: 'Stable', desc: 'Fast general-purpose local model' },
-  { id: 'llava:latest', name: 'LLaVA', badge: 'Vision', desc: 'Local multimodal vision model' },
+  { id: 'qwen2.5:7b', name: 'Qwen 2.5 7B', badge: 'Recommended', desc: 'Local instruction-following model', tier: 'fast' },
+  { id: 'llama3.2:latest', name: 'Llama 3.2', badge: 'Fast Local', desc: 'Lightweight local model', tier: 'fast' },
+  { id: 'deepseek-r1:8b', name: 'DeepSeek R1 8B', badge: 'Local Reasoning', desc: 'Local reasoning model', tier: 'smart' },
 ];
 
-export const DEFAULT_DEEPSEEK_CATALOG: DynamicModelItem[] = [
-  { id: 'deepseek-chat', name: 'DeepSeek-V3 (Chat)', badge: 'Recommended', desc: 'General conversation & code execution' },
-  { id: 'deepseek-reasoner', name: 'DeepSeek-R1 (Reasoner)', badge: 'Thinking', desc: 'Deep chain-of-thought reasoning' },
+export const DEFAULT_GROQ_CATALOG: DynamicModelItem[] = [
+  { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant', badge: 'Fast', desc: 'Low-latency Groq inference', tier: 'fast' },
+  { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B Versatile', badge: 'Smart', desc: '70B versatile reasoning', tier: 'smart' },
+  { id: 'qwen/qwen3.8-27b', name: 'Qwen 3.8 27B', badge: 'Actuator', desc: 'Vision actuator', tier: 'fast' },
 ];
 
-export const DEFAULT_MIMO_CATALOG: DynamicModelItem[] = [
-  { id: 'mimo-v1', name: 'Mimo v1', badge: 'Active', desc: 'Fast agent action model' },
-];
+export function getCuratedCatalog(provider: string): DynamicModelItem[] {
+  const prov = (provider || 'gemini').toLowerCase().trim();
+  switch (prov) {
+    case 'gemini':
+    case 'google':
+      return CUE_GEMINI_CATALOG;
+    case 'vertex':
+      return CUE_VERTEX_CATALOG;
+    case 'antigravity':
+      return CUE_ANTIGRAVITY_CATALOG;
+    case 'codex':
+      return CUE_CODEX_CATALOG;
+    case 'openai':
+      return CUE_OPENAI_CATALOG;
+    case 'anthropic':
+      return CUE_ANTHROPIC_CATALOG;
+    case 'ollama':
+      return DEFAULT_OLLAMA_CATALOG;
+    case 'groq':
+      return DEFAULT_GROQ_CATALOG;
+    case 'custom':
+    default:
+      return [{ id: 'default', name: 'Custom Default', badge: 'Custom', desc: 'Custom OpenAI-compatible model' }];
+  }
+}
 
 export async function fetchDynamicModels(
   provider: string,
   apiKey?: string,
   customUrl?: string
 ): Promise<{ models: DynamicModelItem[]; error?: string; isLive: boolean }> {
-  const prov = (provider || 'groq').toLowerCase().trim();
+  const prov = (provider || 'gemini').toLowerCase().trim();
+  const fallback = getCuratedCatalog(prov);
 
-  // 1. Google Gemini
-  if (prov === 'gemini') {
+  // 1. Google Gemini Live Fetch
+  if (prov === 'gemini' || prov === 'google') {
     if (!apiKey?.trim()) {
-      return { models: DEFAULT_GEMINI_CATALOG, isLive: false };
+      return { models: fallback, isLive: false };
     }
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey.trim())}`;
       const res = await fetch(url);
       if (!res.ok) {
-        return {
-          models: DEFAULT_GEMINI_CATALOG,
-          error: `Google API error ${res.status}`,
-          isLive: false,
-        };
+        return { models: fallback, error: `Google API error ${res.status}`, isLive: false };
       }
       const data = await res.json();
       const rawList = Array.isArray(data.models) ? data.models : [];
-      const filtered = rawList
+      const filtered: DynamicModelItem[] = rawList
         .filter((m: any) => {
           const methods = m.supportedGenerationMethods || [];
           return methods.includes('generateContent');
@@ -85,79 +122,61 @@ export async function fetchDynamicModels(
           return {
             id: cleanId,
             name: m.displayName || cleanId,
-            desc: m.description ? m.description.slice(0, 85) + (m.description.length > 85 ? '...' : '') : 'Google Gemini model',
+            desc: m.description ? m.description.slice(0, 85) + '...' : 'Google Gemini model',
             badge: isFlash ? 'Flash' : isPro ? 'Pro' : 'Gemini',
+            tier: isPro ? 'smart' : 'fast',
           };
         });
 
-      if (filtered.length === 0) {
-        return { models: DEFAULT_GEMINI_CATALOG, isLive: false };
+      if (filtered.length > 0) {
+        return { models: filtered, isLive: true };
       }
-      return { models: filtered, isLive: true };
     } catch (err: any) {
-      return {
-        models: DEFAULT_GEMINI_CATALOG,
-        error: err?.message || 'Network error fetching Gemini models',
-        isLive: false,
-      };
+      return { models: fallback, error: err?.message, isLive: false };
     }
+    return { models: fallback, isLive: false };
   }
 
-  // 2. Groq
-  if (prov === 'groq') {
+  // 2. OpenAI Live Fetch
+  if (prov === 'openai') {
     if (!apiKey?.trim()) {
-      return { models: DEFAULT_GROQ_CATALOG, isLive: false };
+      return { models: fallback, isLive: false };
     }
     try {
-      const res = await fetch('https://api.groq.com/openai/v1/models', {
+      const res = await fetch('https://api.openai.com/v1/models', {
         headers: { Authorization: `Bearer ${apiKey.trim()}` },
       });
-      if (!res.ok) {
-        return {
-          models: DEFAULT_GROQ_CATALOG,
-          error: `Groq API error ${res.status}`,
-          isLive: false,
-        };
+      if (res.ok) {
+        const data = await res.json();
+        const rawList = Array.isArray(data.data) ? data.data : [];
+        const liveModels: DynamicModelItem[] = rawList
+          .filter((m: any) => {
+            const id = (m.id || '').toLowerCase();
+            return (id.startsWith('gpt-') || id.startsWith('o1') || id.startsWith('o3')) && !id.includes('realtime') && !id.includes('audio');
+          })
+          .map((m: any) => ({
+            id: m.id,
+            name: m.id,
+            desc: `OpenAI model (${m.owned_by || 'system'})`,
+            badge: m.id.includes('mini') || m.id.includes('nano') ? 'Fast' : 'Smart',
+            tier: m.id.includes('mini') || m.id.includes('nano') ? 'fast' : 'smart',
+          }));
+        if (liveModels.length > 0) {
+          liveModels.sort((a, b) => a.id.localeCompare(b.id));
+          return { models: liveModels, isLive: true };
+        }
       }
-      const data = await res.json();
-      const rawList = Array.isArray(data.data) ? data.data : [];
-      const liveModels: DynamicModelItem[] = rawList
-        .filter((m: any) => m.id && !DECOMMISSIONED_GROQ_MODELS.has(m.id))
-        .map((m: any) => {
-          const id = m.id as string;
-          const isQwen = id.toLowerCase().includes('qwen');
-          const isGpt = id.toLowerCase().includes('gpt-oss');
-          const isLlama = id.toLowerCase().includes('llama');
-          const isR1 = id.toLowerCase().includes('r1');
-          return {
-            id,
-            name: id,
-            desc: `Groq fast inference endpoint (owned by ${m.owned_by || 'groq'})`,
-            badge: isQwen ? 'Actuator' : isGpt ? 'Reasoning' : isR1 ? 'Thinking' : isLlama ? 'Llama' : 'Groq',
-          };
-        });
-
-      // Sort so recommended actuator models appear first
-      liveModels.sort((a, b) => {
-        const aScore = a.id.includes('qwen3.8') ? 10 : a.id.includes('gpt-oss') ? 8 : a.id.includes('llama-3.1') ? 6 : 1;
-        const bScore = b.id.includes('qwen3.8') ? 10 : b.id.includes('gpt-oss') ? 8 : b.id.includes('llama-3.1') ? 6 : 1;
-        return bScore - aScore;
-      });
-
-      return { models: liveModels.length > 0 ? liveModels : DEFAULT_GROQ_CATALOG, isLive: true };
     } catch (err: any) {
-      return {
-        models: DEFAULT_GROQ_CATALOG,
-        error: err?.message || 'Network error fetching Groq models',
-        isLive: false,
-      };
+      return { models: fallback, error: err?.message, isLive: false };
     }
+    return { models: fallback, isLive: false };
   }
 
   // 3. Ollama (local endpoint)
   if (prov === 'ollama') {
+    const base = (customUrl || 'http://localhost:11434').replace(/\/+$/, '');
     try {
-      const res = await fetch('http://localhost:11434/api/tags');
+      const res = await fetch(`${base}/api/tags`);
       if (res.ok) {
         const data = await res.json();
         const rawList = Array.isArray(data.models) ? data.models : [];
@@ -166,47 +185,15 @@ export async function fetchDynamicModels(
           name: m.name || m.model,
           desc: `Local Ollama model (${Math.round((m.size || 0) / (1024 * 1024))} MB)`,
           badge: 'Local',
+          tier: 'fast',
         }));
         if (models.length > 0) return { models, isLive: true };
       }
-    } catch {
-      // Fallback
-    }
-    return { models: DEFAULT_OLLAMA_CATALOG, isLive: false };
+    } catch {}
+    return { models: fallback, isLive: false };
   }
 
-  // 4. DeepSeek
-  if (prov === 'deepseek') {
-    if (!apiKey?.trim()) {
-      return { models: DEFAULT_DEEPSEEK_CATALOG, isLive: false };
-    }
-    try {
-      const res = await fetch('https://api.deepseek.com/models', {
-        headers: { Authorization: `Bearer ${apiKey.trim()}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const rawList = Array.isArray(data.data) ? data.data : [];
-        const models: DynamicModelItem[] = rawList.map((m: any) => ({
-          id: m.id,
-          name: m.id,
-          desc: 'DeepSeek model',
-          badge: m.id.includes('reasoner') ? 'Thinking' : 'Chat',
-        }));
-        if (models.length > 0) return { models, isLive: true };
-      }
-    } catch {
-      // Fallback
-    }
-    return { models: DEFAULT_DEEPSEEK_CATALOG, isLive: false };
-  }
-
-  // 5. Mimo
-  if (prov === 'mimo') {
-    return { models: DEFAULT_MIMO_CATALOG, isLive: false };
-  }
-
-  // 6. Custom OpenAI compatible
+  // 4. Custom OpenAI-compatible endpoint
   if (prov === 'custom') {
     const base = (customUrl || '').replace(/\/+$/, '');
     if (base) {
@@ -226,15 +213,11 @@ export async function fetchDynamicModels(
           }));
           if (models.length > 0) return { models, isLive: true };
         }
-      } catch {
-        // Fallback
-      }
+      } catch {}
     }
-    return {
-      models: [{ id: 'default', name: 'Custom Default', desc: 'Custom OpenAI endpoint default model', badge: 'Custom' }],
-      isLive: false,
-    };
+    return { models: fallback, isLive: false };
   }
 
-  return { models: DEFAULT_GROQ_CATALOG, isLive: false };
+  // 5. Curated for Vertex, Antigravity, Codex, Anthropic, Groq
+  return { models: fallback, isLive: false };
 }
