@@ -52,6 +52,7 @@ impl AiProvider for MockAiProvider {
                     },
                 ],
                 finish_reason: Some("tool_calls".to_string()),
+                ..Default::default()
             })
         } else {
             // Second turn: synthesize final answer
@@ -59,6 +60,7 @@ impl AiProvider for MockAiProvider {
                 content: Some("Bitcoin is currently trading near $84,000 USD. Linus Torvalds is the principal developer of the Linux kernel.".to_string()),
                 tool_calls: Vec::new(),
                 finish_reason: Some("stop".to_string()),
+                ..Default::default()
             })
         }
     }

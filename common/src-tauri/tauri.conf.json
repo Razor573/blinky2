@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Blinky",
+  "productName": "Clinky",
   "version": "0.1.0",
-  "identifier": "app.blinky.tutor",
+  "identifier": "app.clinky.buddy",
   "build": {
     "beforeDevCommand": "vite --config common/frontend/vite.config.ts",
     "beforeBuildCommand": "bun common/scripts/prepare-python-runtime.mjs && bun common/scripts/prepare-whatsapp-backend.mjs && vite build --config common/frontend/vite.config.ts",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "command",
-        "title": "Recording Toolbar",
+        "title": "Clinky Settings",
         "url": "/command",
         "width": 760,
         "height": 720,
@@ -29,7 +29,7 @@
       },
       {
         "label": "overlay",
-        "title": "Blinky Highlight Overlay",
+        "title": "Clinky Overlay",
         "url": "/overlay",
         "fullscreen": false,
         "alwaysOnTop": true,
@@ -42,7 +42,7 @@
       },
       {
         "label": "notebook",
-        "title": "Blinky Knowledge Hub",
+        "title": "Clinky Knowledge Hub",
         "url": "/notebook",
         "width": 1280,
         "height": 820,

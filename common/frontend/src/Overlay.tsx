@@ -1,6 +1,9 @@
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Check, Copy } from 'lucide-react';
 
 import { getHighlightSteps } from './lib/guidance';
 import type { TutorResult } from './lib/types';
@@ -26,6 +29,19 @@ interface HighlightFrame {
   instruction: string;
 }
 
+export type ClinkyState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
+
+interface ClinkyResponse {
+  text: string;
+  provider?: string;
+}
+
+interface PendingAction {
+  action_id: string;
+  description: string;
+  command?: string;
+}
+
 export function Overlay() {
   const [result, setResult] = useState<TutorResult | null>(null);
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(() => new Set());
@@ -34,24 +50,159 @@ export function Overlay() {
 
   const cursorRef = useRef<HTMLDivElement>(null);
   const currentPosRef = useRef<{ x: number; y: number }>({ x: -100, y: -100 });
+  const targetPosRef = useRef<{ x: number; y: number }>({ x: -100, y: -100 });
   const activeGlideAnimRef = useRef<Animation | null>(null);
 
-  const [agentCursorVisible, setAgentCursorVisible] = useState(false);
+  const [agentCursorVisible, setAgentCursorVisible] = useState(true);
   const [isAgentModeActive, setIsAgentModeActive] = useState(false);
   const isAgentModeActiveRef = useRef(false);
   const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [isClicking, setIsClicking] = useState(false);
+  const [clinkyState, setClinkyState] = useState<ClinkyState>('idle');
+
+  // Floating Response Bubble
+  const [responseBubble, setResponseBubble] = useState<ClinkyResponse | null>(null);
+  const [copied, setCopied] = useState(false);
+  const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isBubbleHoveredRef = useRef(false);
+
+  // Action Confirmation Gate
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
 
   const isAgentActingRef = useRef(false);
-  const actingTimeoutRef = useRef<any>(null);
+  const actingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isVoiceActiveRef = useRef(false);
-  const hideVoiceTimeoutRef = useRef<any>(null);
+  const hideVoiceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const framesRef = useRef<HighlightFrame[]>([]);
 
   const glowContainerRef = useRef<HTMLDivElement>(null);
 
   const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
   const pixelRatio = typeof window !== 'undefined' && isWindows ? window.devicePixelRatio || 1 : 1;
+
+  // Clinky companion cursor offset: +14px X, -16px Y from cursor
+  const COMPANION_OFFSET_X = 14;
+  const COMPANION_OFFSET_Y = -16;
+  const nativeCursorPos = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  // Click-through behavior: ignore cursor events by default on overlay
+  useEffect(() => {
+    try {
+      void getCurrentWindow().setIgnoreCursorEvents(true);
+    } catch (err) {
+      console.warn('Failed to set initial ignoreCursorEvents:', err);
+    }
+    return () => {
+      try {
+        void getCurrentWindow().setIgnoreCursorEvents(false);
+      } catch {}
+    };
+  }, []);
+
+  const handleInteractiveMouseEnter = useCallback(() => {
+    try {
+      void getCurrentWindow().setIgnoreCursorEvents(false);
+    } catch {}
+  }, []);
+
+  const handleInteractiveMouseLeave = useCallback(() => {
+    try {
+      void getCurrentWindow().setIgnoreCursorEvents(true);
+    } catch {}
+  }, []);
+
+  // Response bubble auto-hide timer management (15s default, paused when hovered)
+  const startAutoHideTimer = useCallback(() => {
+    if (autoHideTimerRef.current) {
+      clearTimeout(autoHideTimerRef.current);
+      autoHideTimerRef.current = null;
+    }
+    if (!isBubbleHoveredRef.current) {
+      autoHideTimerRef.current = setTimeout(() => {
+        setResponseBubble(null);
+        handleInteractiveMouseLeave();
+      }, 15000);
+    }
+  }, [handleInteractiveMouseLeave]);
+
+  const pauseAutoHideTimer = useCallback(() => {
+    if (autoHideTimerRef.current) {
+      clearTimeout(autoHideTimerRef.current);
+      autoHideTimerRef.current = null;
+    }
+  }, []);
+
+  const showResponse = useCallback((text: string, provider = 'Gemini 2.0 Flash') => {
+    if (!text || !text.trim()) return;
+    setResponseBubble({ text: text.trim(), provider });
+    startAutoHideTimer();
+  }, [startAutoHideTimer]);
+
+  const handleCopyResponse = async () => {
+    if (!responseBubble?.text) return;
+    try {
+      await navigator.clipboard.writeText(responseBubble.text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy response text to clipboard:', err);
+    }
+  };
+
+  const handleDismissResponse = () => {
+    pauseAutoHideTimer();
+    setResponseBubble(null);
+    handleInteractiveMouseLeave();
+  };
+
+  const handleAllowAction = async () => {
+    if (!pendingAction) return;
+    await emit('blinky://confirm-action-response', {
+      action_id: pendingAction.action_id,
+      allowed: true,
+    });
+    setPendingAction(null);
+    handleInteractiveMouseLeave();
+  };
+
+  const handleCancelAction = async () => {
+    if (!pendingAction) return;
+    await emit('blinky://confirm-action-response', {
+      action_id: pendingAction.action_id,
+      allowed: false,
+    });
+    setPendingAction(null);
+    handleInteractiveMouseLeave();
+  };
+
+  // Smooth requestAnimationFrame lerp loop: direct glide, zero lag/rubber-banding
+  useEffect(() => {
+    let animId: number;
+    const updateLoop = () => {
+      if (!isAgentActingRef.current && cursorRef.current && targetPosRef.current.x !== -100) {
+        const cur = currentPosRef.current;
+        const target = targetPosRef.current;
+        const dx = target.x - cur.x;
+        const dy = target.y - cur.y;
+        const dist = Math.hypot(dx, dy);
+
+        if (dist > 0.05) {
+          if (cur.x === -100 || dist < 0.8) {
+            cur.x = target.x;
+            cur.y = target.y;
+          } else {
+            // Direct responsive glide (0.38 lerp factor)
+            cur.x += dx * 0.38;
+            cur.y += dy * 0.38;
+          }
+          cursorRef.current.style.transform = `translate3d(${cur.x}px, ${cur.y}px, 0)`;
+        }
+      }
+      animId = requestAnimationFrame(updateLoop);
+    };
+    animId = requestAnimationFrame(updateLoop);
+    return () => cancelAnimationFrame(animId);
+  }, []);
 
   // Window offsets initialization and tracking
   const updateOffsets = useCallback(async () => {
@@ -82,9 +233,13 @@ export function Overlay() {
       if (pos.x !== 0 || pos.y !== 0) {
         const cssX = (pos.x / pixelRatio) - offsetsRef.current.x;
         const cssY = (pos.y / pixelRatio) - offsetsRef.current.y;
-        currentPosRef.current = { x: cssX, y: cssY };
+        const companionX = cssX + COMPANION_OFFSET_X;
+        const companionY = cssY + COMPANION_OFFSET_Y;
+        currentPosRef.current = { x: companionX, y: companionY };
+        targetPosRef.current = { x: companionX, y: companionY };
+        nativeCursorPos.current = { x: companionX, y: companionY };
         if (cursorRef.current) {
-          cursorRef.current.style.transform = `translate3d(${cssX}px, ${cssY}px, 0)`;
+          cursorRef.current.style.transform = `translate3d(${companionX}px, ${companionY}px, 0)`;
         }
       }
     });
@@ -103,21 +258,22 @@ export function Overlay() {
         hideVoiceTimeoutRef.current = null;
       }
       setAgentCursorVisible(true);
+      setClinkyState('listening');
       if (cursorRef.current && !isAgentActingRef.current) {
         cursorRef.current.style.opacity = '1';
       }
     } else {
+      if (clinkyState === 'listening') {
+        setClinkyState('idle');
+      }
       if (hideVoiceTimeoutRef.current) clearTimeout(hideVoiceTimeoutRef.current);
       hideVoiceTimeoutRef.current = setTimeout(() => {
         if (!isAgentActingRef.current && !isAgentModeActiveRef.current) {
-          setAgentCursorVisible(false);
-          if (cursorRef.current) {
-            cursorRef.current.style.opacity = '0';
-          }
+          // Keep buddy cursor smoothly visible beside cursor
         }
       }, 500);
     }
-  }, [isVoiceActive]);
+  }, [isVoiceActive, clinkyState]);
 
   useEffect(() => {
     const unlistenVad = listen<{ volume: number }>('blinky://vad-update', (event) => {
@@ -153,14 +309,10 @@ export function Overlay() {
       } else {
         isAgentActingRef.current = false;
         if (!isAgentModeActiveRef.current && !isVoiceActiveRef.current && cursorRef.current) {
-          cursorRef.current.style.opacity = '0';
+          // Retain buddy opacity if companion mode is active
         }
       }
     });
-
-    const COMPANION_OFFSET_X = 16;
-    const COMPANION_OFFSET_Y = 16;
-    const nativeCursorPos = { x: 0, y: 0 };
 
     const unlistenNativeMove = listen<{ x: number, y: number }>('blinky://native-cursor-move', (event) => {
       const cssX = (event.payload.x / pixelRatio) - offsetsRef.current.x;
@@ -169,16 +321,15 @@ export function Overlay() {
       const companionX = cssX + COMPANION_OFFSET_X;
       const companionY = cssY + COMPANION_OFFSET_Y;
 
-      nativeCursorPos.x = companionX;
-      nativeCursorPos.y = companionY;
+      nativeCursorPos.current = { x: companionX, y: companionY };
+      targetPosRef.current = { x: companionX, y: companionY };
 
-      // When AI cursor is NOT in the middle of executing an action, it floats beside the user's native cursor
       if (cursorRef.current && !isAgentActingRef.current) {
-        currentPosRef.current = { x: companionX, y: companionY };
-        cursorRef.current.style.transform = `translate3d(${companionX}px, ${companionY}px, 0)`;
-        if (agentCursorVisible || isAgentModeActiveRef.current || isVoiceActiveRef.current) {
-          cursorRef.current.style.opacity = '1';
+        if (currentPosRef.current.x === -100) {
+          currentPosRef.current = { x: companionX, y: companionY };
+          cursorRef.current.style.transform = `translate3d(${companionX}px, ${companionY}px, 0)`;
         }
+        cursorRef.current.style.opacity = '1';
       }
     });
 
@@ -209,7 +360,6 @@ export function Overlay() {
         typeof event.payload.y === 'number' &&
         !isNaN(event.payload.y);
 
-      // Only fall back to highlight frame center if no explicit coordinates were given
       if (!hasExplicitCoords && framesRef.current && framesRef.current.length > 0) {
         const frame = framesRef.current[0];
         targetCssX = frame.left + frame.width / 2;
@@ -218,12 +368,10 @@ export function Overlay() {
 
       const el = cursorRef.current;
       if (el) {
-        // Place AI cursor at start position and make visible
         el.style.transform = `translate3d(${startCssX}px, ${startCssY}px, 0)`;
         el.style.opacity = '1';
         setAgentCursorVisible(true);
 
-        // Hardware GPU glide animation from start to target
         const anim = el.animate(
           [
             { transform: `translate3d(${startCssX}px, ${startCssY}px, 0)` },
@@ -251,15 +399,8 @@ export function Overlay() {
         };
       }
 
-      // Safety fallback timeout in case of unexpected backend crash (20 seconds)
       actingTimeoutRef.current = setTimeout(() => {
         isAgentActingRef.current = false;
-        if (!isAgentModeActiveRef.current && !isVoiceActiveRef.current) {
-          setAgentCursorVisible(false);
-          if (cursorRef.current) {
-            cursorRef.current.style.opacity = '0';
-          }
-        }
       }, 20000);
     });
 
@@ -277,15 +418,14 @@ export function Overlay() {
       setIsClicking(false);
 
       const el = cursorRef.current;
-      if (el && (isAgentModeActiveRef.current || isVoiceActiveRef.current || agentCursorVisible)) {
+      if (el) {
         const startX = currentPosRef.current.x;
         const startY = currentPosRef.current.y;
-        const returnX = nativeCursorPos.x || startX;
-        const returnY = nativeCursorPos.y || startY;
+        const returnX = nativeCursorPos.current.x || startX;
+        const returnY = nativeCursorPos.current.y || startY;
         const dist = Math.hypot(returnX - startX, returnY - startY);
 
         if (dist > 10) {
-          // Smooth return glide back beside user's native cursor
           const returnAnim = el.animate(
             [
               { transform: `translate3d(${startX}px, ${startY}px, 0)` },
@@ -302,6 +442,7 @@ export function Overlay() {
           returnAnim.onfinish = () => {
             el.style.transform = `translate3d(${returnX}px, ${returnY}px, 0)`;
             currentPosRef.current = { x: returnX, y: returnY };
+            targetPosRef.current = { x: returnX, y: returnY };
             try {
               returnAnim.cancel();
             } catch {}
@@ -311,17 +452,48 @@ export function Overlay() {
         } else {
           el.style.transform = `translate3d(${returnX}px, ${returnY}px, 0)`;
           currentPosRef.current = { x: returnX, y: returnY };
+          targetPosRef.current = { x: returnX, y: returnY };
           isAgentActingRef.current = false;
         }
         el.style.opacity = '1';
       } else {
         isAgentActingRef.current = false;
-        if (!isVoiceActiveRef.current && !isAgentModeActiveRef.current) {
-          setAgentCursorVisible(false);
-          if (cursorRef.current) {
-            cursorRef.current.style.opacity = '0';
-          }
-        }
+      }
+    });
+
+    // Clinky State Indicator Listener
+    const unlistenClinkyState = listen<{ state: ClinkyState }>('blinky://clinky-state', (event) => {
+      if (event.payload?.state) {
+        setClinkyState(event.payload.state);
+      }
+    });
+
+    // Floating Response Bubble Listener
+    const unlistenClinkyResponse = listen<{ text: string; provider?: string }>('blinky://clinky-response', (event) => {
+      if (event.payload?.text) {
+        showResponse(event.payload.text, event.payload.provider || 'Gemini 2.0 Flash');
+      }
+    });
+
+    // Action Confirmation Gate Listener
+    const unlistenConfirmAction = listen<PendingAction>('blinky://confirm-action', (event) => {
+      setPendingAction(event.payload);
+      setAgentCursorVisible(true);
+      if (cursorRef.current) {
+        cursorRef.current.style.opacity = '1';
+      }
+    });
+
+    // Tutor Status Listener for state synchronization
+    const unlistenTutorStatus = listen<{ phase: string; message: string }>('blinky://tutor-status', (event) => {
+      const p = (event.payload?.phase || '').toLowerCase();
+      const m = (event.payload?.message || '').toLowerCase();
+      if (p === 'thinking' || m.includes('thinking')) {
+        setClinkyState('thinking');
+      } else if (p === 'error' || m.includes('error') || m.includes('failed')) {
+        setClinkyState('error');
+      } else if (p === 'done' || p === 'idle' || p === 'success') {
+        setClinkyState('idle');
       }
     });
 
@@ -339,22 +511,29 @@ export function Overlay() {
       unlistenNativeMove.then((dispose) => dispose());
       unlistenAgentMove.then((dispose) => dispose());
       unlistenAgentDone.then((dispose) => dispose());
+      unlistenClinkyState.then((dispose) => dispose());
+      unlistenClinkyResponse.then((dispose) => dispose());
+      unlistenConfirmAction.then((dispose) => dispose());
+      unlistenTutorStatus.then((dispose) => dispose());
     };
-  }, [pixelRatio]);
-
+  }, [pixelRatio, showResponse]);
 
   useEffect(() => {
-    let timeoutId: any = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const unlisten = listen<TutorResult>('blinky://guidance', (event) => {
       setResult(event.payload);
       setDismissedKeys(new Set());
+      setClinkyState('idle');
+
+      if (event.payload?.summary) {
+        showResponse(event.payload.summary, 'Gemini 2.0 Flash');
+      }
 
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
 
-      // Auto-dismiss highlights after 8 seconds on non-Windows platforms (fallback for missing global click hook)
       if (!navigator.userAgent.includes('Windows')) {
         timeoutId = setTimeout(() => {
           setResult(null);
@@ -368,8 +547,7 @@ export function Overlay() {
         clearTimeout(timeoutId);
       }
     };
-  }, []);
-
+  }, [showResponse]);
 
   const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
   const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 1080;
@@ -432,17 +610,9 @@ export function Overlay() {
           const rawLeft = Math.round(match.x * scaleX) - Math.round(paddingX / 2) - offsets.x;
           let rawTop = Math.round(match.y * scaleY) - Math.round(paddingY / 2) - offsets.y;
 
-
           const rawWidth = Math.max(8, Math.round(match.width * scaleX)) + paddingX;
           const rawHeight = Math.max(8, Math.round(match.height * scaleY)) + paddingY;
 
-          // Cap to MAX_BOX, keeping the element center fixed
-          // EXCEPT for wide elements (like sidebar lists) where we align to the left edge (with a small margin)
-          // where the folder icon and text are actually situated!
-          // Desktop icons (shell desktop ListView rows, open-source icon
-          // detector boxes) are TALL (picture + label, often 80-120px), so
-          // they bypass the short in-app caps or the frame gets crushed
-          // into a wide flat strip that misses the picture.
           const matchSource = String(match.source || '').toLowerCase();
           const isDesktopIcon =
             (match as unknown as Record<string, unknown>).shell_region === 'desktop' ||
@@ -450,8 +620,6 @@ export function Overlay() {
           const MAX_BOX_WIDTH = isDesktopIcon ? 130 : (useIconFrame ? 100 : 140);
           const MAX_BOX_HEIGHT = isDesktopIcon ? 170 : (useIconFrame ? 40 : 44);
 
-          // Enforce a minimum size of 36px for all highlights to ensure they are easily visible,
-          // particularly for small icons and dots!
           const MIN_BOX_SIZE = 36;
           let displayHeight = Math.min(Math.max(MIN_BOX_SIZE, rawHeight), MAX_BOX_HEIGHT);
 
@@ -472,21 +640,15 @@ export function Overlay() {
             displayLeft = Math.round(iconCenterX - iconBoxSize / 2);
             rawTop = Math.round(iconCenterY - iconBoxSize / 2 - (rawHeight - displayHeight) / 2);
           } else if (isInput) {
-            // Keep the exact input field width and bounds
             displayWidth = rawWidth;
             displayLeft = rawLeft;
           } else if (!useIconFrame && !isDesktopIcon && rawWidth > 140) {
-            // Wide elements (likely list/sidebar rows):
-            // Fit the width comfortably by estimating character length
             const textLength = match.text ? String(match.text).length : 8;
             const estimatedWidth = 24 + textLength * 7.2 + 28;
             
             displayWidth = Math.min(rawWidth, Math.max(55, Math.round(estimatedWidth)));
-            
-            // Wide elements: align to the left (shifted 20px right to cover text comfortably)
             displayLeft = rawLeft + 20;
           } else {
-            // Normal elements: center them
             displayLeft = rawLeft + Math.round((rawWidth - displayWidth) / 2);
           }
           const displayTop = rawTop + Math.round((rawHeight - displayHeight) / 2);
@@ -528,7 +690,7 @@ export function Overlay() {
         })
         .filter((frame): frame is HighlightFrame => Boolean(frame)) || []
     );
-  }, [result, scaleX, scaleY, viewportWidth, viewportHeight, offsets]);
+  }, [result, scaleX, scaleY, viewportWidth, viewportHeight, offsets, isWindows]);
 
   useEffect(() => {
     framesRef.current = frames;
@@ -536,14 +698,12 @@ export function Overlay() {
 
   useEffect(() => {
     const unlisten = listen<GlobalClick>('blinky://global-click', (event) => {
-      // Trigger click ripple ring on physical mouse click
       setIsClicking(true);
       setTimeout(() => setIsClicking(false), 300);
 
       const clickedFrame = frames.find((frame) => containsClick(frame, event.payload, scaleX, scaleY));
       if (!clickedFrame) return;
 
-      // User clicked the specific highlighted button: return AI cursor back to native cursor
       void emit('blinky://agent-cursor-done', {});
 
       setDismissedKeys((current) => {
@@ -572,26 +732,115 @@ export function Overlay() {
 
       <div 
         ref={cursorRef}
-        className="agent-cursor-wrapper"
+        className="clinky-buddy-wrapper"
         style={{
           opacity: agentCursorVisible ? 1 : 0,
           transform: `translate3d(${currentPosRef.current.x}px, ${currentPosRef.current.y}px, 0)`,
         }}
       >
         {isClicking && <div className="agent-cursor-click-ring" />}
-        <svg className="agent-cursor" viewBox="0 0 24 24" width="28" height="28" fill="var(--accent-strong)" xmlns="http://www.w3.org/2000/svg">
-          <path d="M5.5 3.21V20.8c0 .45.54.67.85.35l4.86-4.86a.5.5 0 0 1 .35-.15h6.87c.45 0 .67-.54.35-.85L6.35 2.86a.5.5 0 0 0-.85.35Z"/>
-        </svg>
-        {isVoiceActive && (
-          <div className="agent-visualizer">
-            <div className="bar" />
-            <div className="bar" />
-            <div className="bar" />
+        
+        <div className="clinky-buddy-anchor">
+          {clinkyState === 'thinking' && <div className="clinky-state-thinking" />}
+          <svg 
+            className={`clinky-buddy-triangle ${clinkyState === 'idle' ? 'clinky-buddy-breathe' : ''} ${clinkyState === 'speaking' ? 'clinky-buddy-speaking' : ''} ${clinkyState === 'error' ? 'clinky-state-error' : ''}`}
+            viewBox="0 0 22 20" 
+            width="22" 
+            height="20" 
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <polygon points="11,1 21,19 1,19" fill={clinkyState === 'error' ? '#ff6b6b' : '#8EC5FF'} />
+          </svg>
+          {clinkyState === 'listening' && (
+            <div className="clinky-state-listening">
+              <span className="clinky-eq-bar" />
+              <span className="clinky-eq-bar" />
+              <span className="clinky-eq-bar" />
+            </div>
+          )}
+        </div>
+
+        {/* Floating Response Bubble */}
+        {responseBubble && !pendingAction && (
+          <div
+            className="clinky-response-bubble"
+            onMouseEnter={() => {
+              isBubbleHoveredRef.current = true;
+              pauseAutoHideTimer();
+              handleInteractiveMouseEnter();
+            }}
+            onMouseLeave={() => {
+              isBubbleHoveredRef.current = false;
+              startAutoHideTimer();
+              handleInteractiveMouseLeave();
+            }}
+          >
+            <div className="bubble-header">
+              <span className="bubble-badge">{responseBubble.provider || 'Gemini 2.0 Flash'}</span>
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="bubble-copy-btn"
+                  onClick={handleCopyResponse}
+                  title={copied ? 'Copied!' : 'Copy response'}
+                >
+                  {copied ? <Check size={12} color="#4ade80" /> : <Copy size={12} />}
+                </button>
+                <button
+                  type="button"
+                  className="bubble-dismiss-btn"
+                  onClick={handleDismissResponse}
+                  title="Dismiss"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            <div className="bubble-markdown">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {responseBubble.text}
+              </ReactMarkdown>
+            </div>
+          </div>
+        )}
+
+        {/* Action Confirmation Gate */}
+        {pendingAction && (
+          <div
+            className="clinky-confirmation-card"
+            onMouseEnter={handleInteractiveMouseEnter}
+            onMouseLeave={handleInteractiveMouseLeave}
+          >
+            <div className="confirmation-card-header">
+              <span className="confirmation-title">Action Confirmation</span>
+            </div>
+            <div className="confirmation-card-body">
+              <p className="confirmation-description">
+                {pendingAction.description || 'Clinky is about to run:'}
+              </p>
+              {pendingAction.command && (
+                <code className="confirmation-command">{pendingAction.command}</code>
+              )}
+            </div>
+            <div className="confirmation-card-actions">
+              <button
+                type="button"
+                className="confirmation-btn-allow"
+                onClick={handleAllowAction}
+              >
+                Allow
+              </button>
+              <button
+                type="button"
+                className="confirmation-btn-cancel"
+                onClick={handleCancelAction}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
       </div>
-
-
 
       {frames.map((frame) => {
         if (dismissedKeys.has(frame.key)) return null;

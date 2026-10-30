@@ -23,9 +23,9 @@ export const DEFAULT_GROQ_CATALOG: DynamicModelItem[] = [
 ];
 
 export const DEFAULT_GEMINI_CATALOG: DynamicModelItem[] = [
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', badge: 'Recommended RAG', desc: 'Fast multimodal reasoning & high-volume RAG' },
+  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', badge: 'Recommended RAG', desc: 'Ultra-responsive document chunk synthesis & multimodal RAG' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', badge: 'Flash', desc: 'Fast multimodal reasoning & high-volume RAG' },
   { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', badge: 'Deep Context', desc: 'Complex reasoning across 2M token context window' },
-  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', badge: 'Fast Synthesis', desc: 'Ultra-responsive document chunk synthesis' },
   { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite', badge: 'Lite', desc: 'Lightweight & quota-friendly' },
   { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', badge: 'Stable', desc: 'Proven long-context workhorse' },
   { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', badge: 'Pro Reasoning', desc: 'High capability multi-turn analysis' },

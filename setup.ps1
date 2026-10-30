@@ -73,7 +73,7 @@ $LogFile = Join-Path $RepoRoot "setup.log"
 try { Start-Transcript -Path $LogFile -Append -ErrorAction SilentlyContinue | Out-Null } catch {}
 
 Write-Host "`n============================================================" -ForegroundColor Magenta
-Write-Host "  Blinky - One-click Windows Setup" -ForegroundColor Magenta
+Write-Host "  Clinky - One-click Windows Setup" -ForegroundColor Magenta
 Write-Host "  Repo: $RepoRoot" -ForegroundColor DarkGray
 Write-Host "  Flags: Run=$Run Yes=$Yes SkipMobile=$SkipMobile" -ForegroundColor DarkGray
 Write-Host "  Log:  $LogFile" -ForegroundColor DarkGray

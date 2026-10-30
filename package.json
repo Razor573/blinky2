@@ -1,9 +1,9 @@
 {
-  "name": "blinky",
+  "name": "clinky",
   "version": "0.1.0",
   "private": true,
   "packageManager": "bun@1.3.14",
-  "description": "Blinky is an offline-first AI desktop tutor for Windows.",
+  "description": "Clinky is a general-purpose Windows AI buddy.",
   "scripts": {
     "dev": "bun scripts/dev.ts",
     "dev:clean": "cargo clean --manifest-path common/src-tauri/Cargo.toml -p blinky && bun scripts/dev.ts",

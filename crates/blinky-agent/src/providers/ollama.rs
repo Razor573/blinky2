@@ -1,5 +1,5 @@
 use super::openai::OpenAiCompatibleProvider;
-use super::{AiProvider, AiResponse, ChatMessage, ToolDefinition};
+use super::{AiProvider, AiResponse, ChatMessage, StreamChunkCallback, ToolDefinition};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -13,7 +13,7 @@ impl OllamaProvider {
         let model_name = model.unwrap_or_else(|| "llama3.2".to_string());
         let inner = OpenAiCompatibleProvider::new(
             url,
-            "ollama", // dummy key
+            "ollama",
             model_name,
             "ollama",
         );
@@ -31,11 +31,12 @@ impl AiProvider for OllamaProvider {
         self.inner.model_name().await
     }
 
-    async fn chat(
+    async fn chat_stream(
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
+        on_chunk: StreamChunkCallback,
     ) -> Result<AiResponse> {
-        self.inner.chat(messages, tools).await
+        self.inner.chat_stream(messages, tools, on_chunk).await
     }
 }

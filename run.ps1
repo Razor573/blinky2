@@ -26,7 +26,7 @@ function Test-Cmd($n){ try{ $null=Get-Command $n -ErrorAction Stop; return $true
 
 $RepoRoot=$PSScriptRoot; if(-not $RepoRoot){ $RepoRoot=Split-Path -Parent $MyInvocation.MyCommand.Path }
 Set-Location $RepoRoot
-Write-Host "`n  Blinky - One-click Run (Windows)  |  Repo: $RepoRoot" -ForegroundColor Magenta
+Write-Host "`n  Clinky - One-click Run (Windows)  |  Repo: $RepoRoot" -ForegroundColor Magenta
 
 # Resolve bun (incl. default install path without restart).
 $BunCmd=$null
@@ -63,15 +63,15 @@ try{
   Write-Ok "Dev ports cleared (if anything was stale)"
 }catch{ Write-Warn "Port cleanup skipped: $_" }
 
-# Pick docker vs no-docker automatically.
-$useNoDocker=$NoDocker.IsPresent
-if(-not $useNoDocker){
+# No-Docker is the default run path. Docker and SearXNG are never required.
+$useNoDocker = $true
+if($false){
   try{ docker info 2>&1 | Out-Null; if($LASTEXITCODE -ne 0){ $useNoDocker=$true } }catch{ $useNoDocker=$true }
   if($useNoDocker){ Write-Warn "Docker daemon not running: launching WITHOUT SearXNG web search. Start Docker Desktop to enable search." }
   else{ Write-Ok "Docker daemon running: SearXNG search enabled" }
 }
 
-Write-Step "Launching Blinky (Ctrl+C to stop)"
+Write-Step "Launching Clinky (Ctrl+C to stop)"
 Write-Host "  Hotkeys: CTRL + SHIFT + SPACE  (fallback CTRL + SHIFT + ENTER)" -ForegroundColor DarkGray
 Write-Host "  Mobile:  .\setup-mobile.ps1  (QR + USB flow, phone remote)" -ForegroundColor DarkGray
 $args2=@("run"); if($useNoDocker){ $args2+=@("dev:no-docker") } else{ $args2+=@("dev") }

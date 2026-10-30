@@ -10,23 +10,63 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
-const SYSTEM_PROMPT: &str = r#"You are Fermas-GUI (Blinky), an autonomous, screen-aware desktop AI supervisor on Linux.
-Your goal is to solve the user's task on their computer deterministically with maximum speed and execution velocity.
+pub const WINDOWS_ASSISTANT_PROMPT: &str = r#"You are Clinky (Blinky), a fast, perceptive desktop AI companion on Windows.
+You help the user with any task on their computer directly and concisely.
 
-Operating Principles:
-1. High Velocity & Decisive Action: Prioritize speed and direct progress. For quick answers and architectural planning, respond directly and concisely.
-2. Perceive & Modality Assessment:
-   - Use capture_window or capture_screen to observe UI state and retrieve grounded element references (@eN) with coordinates [x, y, w, h].
-   - If the target is textual, match the specific element reference (@eN).
-   - If the target is an empty canvas, visual icon, or spatial area, use normalized coordinates [u, v] or call `consult_reflex(intent)`.
-3. Action & Batch Input Execution:
-   - Use act_on_frame with @ref or [u, v] coordinates to click, type, or scroll.
-   - For tabular or multi-line data entry (spreadsheets, tables, forms), do not type cells individually. Select the origin field/cell and pass the entire TSV table (rows delimited by '\n', columns by '\t') to `type_text` in a single call for instant grid population.
-   - Use keyboard_key for shortcuts and special keys.
-4. Heavy Engineering & Code Delegation:
-   - For codebase modification, refactoring, building, running test suites, multi-file inspection, or terminal pipelines, DO NOT try to perform these multi-step engineering tasks in the desktop chat loop.
-   - Call `delegate_to_fermas(goal, workspace_path)`: Fermas executes autonomously in a persistent background worker session, leveraging prompt caching, and returns clean verified summaries.
-5. Goal Verification: Confirm that the final requested goal is verified or rendered on screen before delivering your final answer."#;
+Operational Modes:
+1. General Mode (Default):
+   - Answer ANY user question directly and concisely: coding, philosophy, homework, math, writing, software help, PC settings, web research, or general conversation.
+   - NEVER deflect a general question or force the user into an unwanted tutoring or problem-solving script.
+   - When the user asks for information, provide the clear, direct answer immediately.
+   - If pointing to UI elements on the screen is helpful, output pointing tags in the format `[POINT:x,y:label]` where x,y are screen pixel coordinates and label describes the target.
+
+2. Tutor Mode (Opt-in only):
+   - Only activate when explicitly asked to tutor or guide step-by-step.
+   - Provide educational hints, guidance, and visual highlights without doing everything at once.
+
+3. Agent Mode (Opt-in only):
+   - When the user asks you to perform desktop actions (e.g., launch app, click button, type text, automate workflow), use the desktop tools safely.
+   - Observe the UI state before acting. Validate actions against safety gates."#;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PointingTag {
+    pub x: i32,
+    pub y: i32,
+    pub label: String,
+}
+
+pub fn parse_pointing_tags(text: &str, screen_width: i32, screen_height: i32) -> Vec<PointingTag> {
+    let mut tags = Vec::new();
+    let pattern = "[POINT:";
+    let mut pos = 0;
+
+    while let Some(start) = text[pos..].find(pattern) {
+        let actual_start = pos + start;
+        if let Some(end) = text[actual_start..].find(']') {
+            let tag_content = &text[actual_start + pattern.len()..actual_start + end];
+            let parts: Vec<&str> = tag_content.splitn(3, ':').collect();
+            if parts.len() == 2 || parts.len() == 3 {
+                let coords: Vec<&str> = parts[0].split(',').collect();
+                if coords.len() == 2 {
+                    if let (Ok(x), Ok(y)) = (coords[0].trim().parse::<i32>(), coords[1].trim().parse::<i32>()) {
+                        let label = if parts.len() == 3 { parts[2] } else { parts[1] };
+                        if x >= 0 && x <= screen_width && y >= 0 && y <= screen_height {
+                            tags.push(PointingTag {
+                                x,
+                                y,
+                                label: label.trim().to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            pos = actual_start + end + 1;
+        } else {
+            break;
+        }
+    }
+    tags
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStep {
@@ -39,6 +79,7 @@ pub struct AgentStep {
 pub struct AgentResult {
     pub success: bool,
     pub answer: Option<String>,
+    pub pointing_tags: Vec<PointingTag>,
     pub steps: Vec<AgentStep>,
     pub elapsed_ms: f64,
 }
@@ -69,7 +110,7 @@ impl AgentLoop {
             advice.route, advice.confidence, advice.is_atomic_fast_path
         );
 
-        // System 1 Reflex Fast-Path (<5ms)
+        // System 1 Reflex Fast-Path strictly for atomic commands (<5ms)
         if advice.is_atomic_fast_path {
             match advice.route {
                 DecisionRoute::DaemonSystem => {
@@ -80,6 +121,7 @@ impl AgentLoop {
                         return Ok(AgentResult {
                             success: true,
                             answer: Some("Audio mute toggled successfully.".to_string()),
+                            pointing_tags: Vec::new(),
                             steps: Vec::new(),
                             elapsed_ms,
                         });
@@ -90,6 +132,7 @@ impl AgentLoop {
                         return Ok(AgentResult {
                             success: true,
                             answer: Some("Audio volume increased.".to_string()),
+                            pointing_tags: Vec::new(),
                             steps: Vec::new(),
                             elapsed_ms,
                         });
@@ -100,6 +143,7 @@ impl AgentLoop {
                         return Ok(AgentResult {
                             success: true,
                             answer: Some("Audio volume decreased.".to_string()),
+                            pointing_tags: Vec::new(),
                             steps: Vec::new(),
                             elapsed_ms,
                         });
@@ -110,6 +154,7 @@ impl AgentLoop {
                         return Ok(AgentResult {
                             success: true,
                             answer: Some("Workstation locked.".to_string()),
+                            pointing_tags: Vec::new(),
                             steps: Vec::new(),
                             elapsed_ms,
                         });
@@ -120,6 +165,7 @@ impl AgentLoop {
                         return Ok(AgentResult {
                             success: true,
                             answer: Some(format!("Launched application '{}'.", app)),
+                            pointing_tags: Vec::new(),
                             steps: Vec::new(),
                             elapsed_ms,
                         });
@@ -129,20 +175,16 @@ impl AgentLoop {
             }
         }
 
-        // --- SYSTEM 2 ESCALATION WITH SYSTEM 1 GUIDANCE PRIOR ---
-        let enriched_system_prompt = format!(
-            "{}\n\n[SYSTEM 1 ROUTING GUIDANCE]\n{}",
-            SYSTEM_PROMPT, advice.guidance_prompt
-        );
-
+        // --- GENERAL ASSISTANT DIRECT PATH ---
         let mut messages = vec![
-            ChatMessage::system(enriched_system_prompt),
+            ChatMessage::system(WINDOWS_ASSISTANT_PROMPT),
             ChatMessage::user(user_goal),
         ];
 
         let mut steps = Vec::new();
         let mut final_answer = None;
         let mut success = false;
+        let mut pointing_tags = Vec::new();
 
         for turn in 1..=max_turns {
             debug!("Agent Loop Turn {}/{}", turn, max_turns);
@@ -155,6 +197,9 @@ impl AgentLoop {
                 .with_context(|| format!("AI provider failed on turn {}", turn))?;
 
             if ai_res.tool_calls.is_empty() {
+                if let Some(ans) = &ai_res.content {
+                    pointing_tags = parse_pointing_tags(ans, 3840, 2160);
+                }
                 final_answer = ai_res.content;
                 success = true;
                 info!("Agent achieved goal on turn {}: {:?}", turn, final_answer);
@@ -206,6 +251,7 @@ impl AgentLoop {
         Ok(AgentResult {
             success,
             answer: final_answer,
+            pointing_tags,
             steps,
             elapsed_ms,
         })
@@ -236,23 +282,9 @@ impl AgentLoop {
             return Ok(cap_res);
         }
 
-        // Run high-speed Tesseract OCR
         let elements = OcrGrounder::extract_elements(&img_path).await.unwrap_or_default();
         let elem_count = elements.len();
 
-        // Attach elements to daemon frame
-        self.daemon
-            .call(
-                "blinky.attachElements",
-                json!({
-                    "frame_id": frame_id,
-                    "elements": serde_json::to_value(&elements)?
-                }),
-            )
-            .await
-            .ok();
-
-        // Compact representation with bounding boxes for LLM spatial awareness
         let compact_elements: Vec<String> = elements
             .iter()
             .take(100)

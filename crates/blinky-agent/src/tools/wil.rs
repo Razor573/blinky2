@@ -1,11 +1,11 @@
 use super::Tool;
-use crate::providers::ToolDefinition;
+use crate::providers::{AiProvider, ChatMessage, GeminiProvider, ToolDefinition};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
 
 pub struct WebSearchTool {
     client: Client,
@@ -14,10 +14,35 @@ pub struct WebSearchTool {
 impl WebSearchTool {
     pub fn new() -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(15))
             .build()
             .unwrap_or_default();
         Self { client }
+    }
+
+    async fn search_with_google_grounding(&self, query: &str) -> Result<Value> {
+        let api_key = std::env::var("GEMINI_API_KEY")
+            .or_else(|_| std::env::var("GOOGLE_API_KEY"))
+            .context("No GEMINI_API_KEY available for googleSearch routing")?;
+
+        let provider = GeminiProvider::new(api_key, Some("gemini-2.0-flash".to_string()))
+            .with_grounding(true);
+
+        let messages = vec![
+            ChatMessage::user(format!(
+                "Search the web and provide direct, factual research findings for: '{}'",
+                query
+            )),
+        ];
+
+        let ai_res = provider.chat(&messages, &[]).await?;
+
+        Ok(json!({
+            "provider": "google_search_grounding",
+            "query": query,
+            "answer": ai_res.content,
+            "citations": ai_res.citations,
+        }))
     }
 }
 
@@ -26,7 +51,7 @@ impl Tool for WebSearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_search".to_string(),
-            description: "Search the web for up-to-date information, documentation, news, or technical answers using SearXNG".to_string(),
+            description: "Search the web for up-to-date information, documentation, news, or technical answers using Google Search grounding".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -48,38 +73,18 @@ impl Tool for WebSearchTool {
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
         let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
 
-        // 1. Try local SearXNG instance (http://127.0.0.1:8888)
-        let searxng_url = format!("http://127.0.0.1:8888/search?q={}&format=json", urlencoding::encode(query));
-        debug!("Querying local SearXNG at {}", searxng_url);
-
-        if let Ok(resp) = self.client.get(&searxng_url).send().await {
-            if resp.status().is_success() {
-                if let Ok(body) = resp.json::<Value>().await {
-                    if let Some(results) = body.get("results").and_then(|r| r.as_array()) {
-                        let parsed: Vec<Value> = results
-                            .iter()
-                            .take(count)
-                            .map(|r| {
-                                json!({
-                                    "title": r.get("title").and_then(|v| v.as_str()).unwrap_or(""),
-                                    "url": r.get("url").and_then(|v| v.as_str()).unwrap_or(""),
-                                    "content": r.get("content").and_then(|v| v.as_str()).unwrap_or(""),
-                                })
-                            })
-                            .collect();
-
-                        return Ok(json!({
-                            "provider": "searxng_local",
-                            "query": query,
-                            "results": parsed
-                        }));
-                    }
-                }
+        // 1. Google Search Grounding route (preferred)
+        match self.search_with_google_grounding(query).await {
+            Ok(val) => {
+                debug!("Google Search Grounding succeeded for query '{}'", query);
+                return Ok(val);
+            }
+            Err(e) => {
+                debug!("Google Search Grounding unavailable ({:#}); trying public fallback", e);
             }
         }
 
         // 2. Fallback: DuckDuckGo Lite HTML Search
-        warn!("Local SearXNG not reachable; using public search fallback");
         let ddg_url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding::encode(query));
         let ddg_res = self
             .client
@@ -158,7 +163,6 @@ impl Tool for FetchWebPageTool {
 
         let html = resp.text().await.unwrap_or_default();
 
-        // Strip scripts, styles, and HTML tags
         let re_script = regex::Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap();
         let cleaned1 = re_script.replace_all(&html, " ");
         let re_style = regex::Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap();

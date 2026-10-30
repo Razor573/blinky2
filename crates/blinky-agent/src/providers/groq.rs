@@ -1,5 +1,5 @@
 use super::openai::OpenAiCompatibleProvider;
-use super::{AiProvider, AiResponse, ChatMessage, ToolDefinition};
+use super::{AiProvider, AiResponse, ChatMessage, StreamChunkCallback, ToolDefinition};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -30,11 +30,12 @@ impl AiProvider for GroqProvider {
         self.inner.model_name().await
     }
 
-    async fn chat(
+    async fn chat_stream(
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
+        on_chunk: StreamChunkCallback,
     ) -> Result<AiResponse> {
-        self.inner.chat(messages, tools).await
+        self.inner.chat_stream(messages, tools, on_chunk).await
     }
 }

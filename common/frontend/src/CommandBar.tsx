@@ -116,6 +116,110 @@ function ExternalMarkdownLink({ href, children }: AnchorHTMLAttributes<HTMLAncho
 }
 
 
+interface MaskedKeyInputProps {
+  label: string;
+  icon: React.ReactNode;
+  envName: string;
+  isConfigured: boolean;
+  onSave: (value: string) => void;
+  onClear: () => void;
+  description: string;
+  testAction?: () => void;
+  testDisabled?: boolean;
+}
+
+function MaskedKeyInput({
+  label,
+  icon,
+  envName,
+  isConfigured,
+  onSave,
+  onClear,
+  description,
+  testAction,
+  testDisabled,
+}: MaskedKeyInputProps) {
+  const [draft, setDraft] = useState('');
+
+  const handleCommit = () => {
+    if (draft.trim()) {
+      onSave(draft.trim());
+      setDraft('');
+    }
+  };
+
+  return (
+    <div className="settings-section-card settings-key-card">
+      <div className="settings-input-header">
+        <label className="settings-label">
+          {icon}
+          <span>{label}</span>
+          {isConfigured ? (
+            <span className="key-badge-configured">
+              <Check size={10} /> Configured
+            </span>
+          ) : (
+            <span className="key-badge-unconfigured">Not set</span>
+          )}
+        </label>
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          {testAction && (
+            <button
+              type="button"
+              className="settings-btn-action"
+              style={{ padding: '2px 8px', fontSize: '10px' }}
+              onClick={testAction}
+              disabled={testDisabled || !isConfigured}
+            >
+              Test ⚡
+            </button>
+          )}
+          {isConfigured && (
+            <button
+              type="button"
+              className="key-btn-clear"
+              onClick={() => {
+                setDraft('');
+                onClear();
+              }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <input
+          type="password"
+          className="settings-text-input"
+          placeholder={isConfigured ? '•••••••••••••••• (Enter new key to replace)' : `Enter ${envName}...`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleCommit();
+            }
+          }}
+          onBlur={handleCommit}
+          autoComplete="new-password"
+          spellCheck={false}
+        />
+        {draft.trim().length > 0 && (
+          <button
+            type="button"
+            className="key-btn-save"
+            onClick={handleCommit}
+          >
+            Save
+          </button>
+        )}
+      </div>
+      <p className="settings-help-text">{description}</p>
+    </div>
+  );
+}
+
 /** Renders the desktop command bar and coordinates its interactive workflows. */
 export function CommandBar() {
   const [question, setQuestion] = useState('');
@@ -260,7 +364,33 @@ export function CommandBar() {
       }));
     }
   }, []);
-  const [provider, setProvider] = useState('groq');
+  const [provider, setProvider] = useState('gemini');
+  const [vertexProjectId, setVertexProjectId] = useState<string>(() => {
+    return localStorage.getItem('clinky_vertex_project_id') || '';
+  });
+  const [openaiApiKey, setOpenaiApiKey] = useState<string>(() => {
+    return localStorage.getItem('clinky_openai_api_key') || '';
+  });
+
+  const updateVertexProjectId = (val: string) => {
+    const clean = val.trim();
+    setVertexProjectId(clean);
+    if (clean) {
+      localStorage.setItem('clinky_vertex_project_id', clean);
+    } else {
+      localStorage.removeItem('clinky_vertex_project_id');
+    }
+  };
+
+  const updateOpenaiApiKey = (val: string) => {
+    const clean = val.trim();
+    setOpenaiApiKey(clean);
+    if (clean) {
+      localStorage.setItem('clinky_openai_api_key', clean);
+    } else {
+      localStorage.removeItem('clinky_openai_api_key');
+    }
+  };
   const [shortcut, setShortcut] = useState('Enter');
   const defaultAaiKey = (import.meta as any).env?.VITE_ASSEMBLY_AI_API_KEY || '';
   const [sarvamApiKey, setSarvamApiKey] = useState('');
@@ -329,7 +459,8 @@ export function CommandBar() {
 
   // Agent 2: Knowledge & RAG (Gemini) Model Configuration & Search
   const [geminiModel, setGeminiModel] = useState<string>(() => {
-    return localStorage.getItem('blinky_gemini_model') || 'gemini-2.5-flash';
+    const saved = localStorage.getItem('blinky_gemini_model');
+    return (saved && saved !== 'gemini-2.5-flash') ? saved : 'gemini-2.0-flash';
   });
   const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
     return localStorage.getItem('blinky_gemini_api_key') || '';
@@ -443,7 +574,7 @@ export function CommandBar() {
         }
         if (s.custom_api_key) setCustomApiKey(s.custom_api_key);
 
-        const prov = s.provider || 'groq';
+        const prov = s.provider || 'gemini';
         void refreshAgent1Models(prov, s.groq_api_key, s.deepseek_api_key, s.custom_url, s.custom_api_key);
         void refreshGeminiModels(geminiApiKey);
       } catch (err) {
@@ -1293,7 +1424,7 @@ export function CommandBar() {
             console.log(`AssemblyAI Voice Agent invoked tool: ${name}`, args);
             if (name === 'control_desktop') {
               const action = args.action || '';
-              setStatus(`Blinky executing: "${action}"`);
+              setStatus(`Clinky executing: "${action}"`);
               try {
                 await executeTutor(action, false);
                 return { status: 'success', message: `Completed desktop action: ${action}` };
@@ -1475,7 +1606,7 @@ export function CommandBar() {
   ) {
     if (isRunningRef.current) return;
     isRunningRef.current = true;
-    let effectiveQuery = queryText.trim().replace(/^(hey\s+)?blinky[\s,.:;!?]*/i, '').trim();
+let effectiveQuery = queryText.trim().replace(/^(hey\s+)?(blinky|clinky)[\s,.:;!?]*/i, '').trim();
     if (attachedFiles.length > 0) {
       const pathsStr = attachedFiles.map((f) => f.path).join(', ');
       const prefix = `[Referenced Files: ${pathsStr}]`;
@@ -1485,6 +1616,35 @@ export function CommandBar() {
       setAttachedFiles([]);
     }
     if (!effectiveQuery) return;
+
+    // Friendly response for pending actions check
+    const normalizedCheck = effectiveQuery.toLowerCase().replace(/[?.,!]/g, '').trim();
+    if (
+      normalizedCheck === 'are there any pending actions' ||
+      normalizedCheck === 'confirm action' ||
+      normalizedCheck === 'is there any pending action' ||
+      normalizedCheck === 'any pending actions' ||
+      normalizedCheck === 'pending actions'
+    ) {
+      const friendlyMsg = 'Nothing awaiting confirmation.';
+      setStatus(friendlyMsg);
+      setSpokenStatus(friendlyMsg);
+      setIsRunning(false);
+      isRunningRef.current = false;
+      const newHistoryEntries: TutorConversationMessage[] = [
+        { role: 'student', content: effectiveQuery },
+        { role: 'blinky', content: friendlyMsg },
+      ];
+      conversationHistoryRef.current = [
+        ...conversationHistoryRef.current,
+        ...newHistoryEntries,
+      ].slice(-10);
+      void emit('blinky://clinky-response', {
+        text: friendlyMsg,
+        provider: 'Clinky Desktop',
+      });
+      return;
+    }
 
     const runId = runIdRef.current + 1;
     runIdRef.current = runId;
@@ -1514,6 +1674,7 @@ export function CommandBar() {
 
     setIsRunning(true);
     setStatus('Thinking...');
+    void emit('blinky://clinky-state', { state: 'thinking' });
     if (!options.preserveStepsDuringRun) {
       setSteps([]);
     }
@@ -1703,6 +1864,11 @@ export function CommandBar() {
         completedTargetsRef.current.length > 0 || completedInstructionsRef.current.length > 0;
       const highlightSteps = getHighlightSteps(currentGuideSteps);
       await emit('blinky://guidance', { ...result, steps: currentGuideSteps });
+      void emit('blinky://clinky-response', {
+        text: result.summary,
+        provider: provider === 'gemini' ? (geminiModel.includes('2.0') ? 'Gemini 2.0 Flash' : 'Gemini') : provider.toUpperCase(),
+      });
+      void emit('blinky://clinky-state', { state: 'idle' });
       isPointing = false;
       if (highlightSteps.length > 0) {
         await showOverlay();
@@ -2655,11 +2821,11 @@ export function CommandBar() {
           }}
         >
           <div className="command-icon">
-            <img src="/logo_text.png" alt="Blinky" style={{ height: 32, objectFit: 'contain' }} />
+            <img src="/logo_text.png" alt="Clinky" style={{ height: 32, objectFit: 'contain' }} />
           </div>
 
           <div className="command-top-hint" data-tauri-drag-region>
-            Blinky app <span className="keys">Ctrl + Shift + {shortcut === 'Space' ? 'Space' : 'Enter'}</span>
+            Clinky app <span className="keys">Ctrl + Shift + {shortcut === 'Space' ? 'Space' : 'Enter'}</span>
           </div>
 
           <div className="command-actions">
@@ -2848,7 +3014,7 @@ export function CommandBar() {
         {recipePrompt && (
           <div className="recipe-prompt-banner">
             <div className="recipe-prompt-title">
-              <img src="/blinky_mascot_logo.png" alt="Blinky" style={{ height: 24, objectFit: 'contain' }} />
+              <img src="/blinky_mascot_logo.png" alt="Clinky" style={{ height: 24, objectFit: 'contain' }} />
               <span>Save this workflow?</span>
             </div>
             <div className="recipe-prompt-preview">
@@ -3085,7 +3251,7 @@ export function CommandBar() {
             <div className="command-result-container">
               {showSummaryBubble && (
                 <div className="command-summary-bubble">
-                  <img src="/blinky_mascot_logo.png" className="summary-sparkle" style={{ height: 24, objectFit: 'contain' }} alt="Blinky" />
+                  <img src="/blinky_mascot_logo.png" className="summary-sparkle" style={{ height: 24, objectFit: 'contain' }} alt="Clinky" />
                   <div className="command-summary-text-container">
                     <span className="command-status">
                       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents as any}>
@@ -3263,7 +3429,7 @@ export function CommandBar() {
 
               {pairingPayload && !pairingError && (
                 <div className="wa-qr-container">
-                  <p className="wa-scan-instruction">Scan with the Blinky mobile app (QR tab):</p>
+                  <p className="wa-scan-instruction">Scan with the Clinky mobile app (QR tab):</p>
                   {pairingPayload.ips.length > 1 && (
                     <div className="pairing-ip-row">
                       <span className="wa-help-text">PC IP:</span>
@@ -3658,89 +3824,70 @@ export function CommandBar() {
                 {/* TAB 2: KEYS & APIS */}
                 {settingsTab === 'keys' && (
                   <>
-                    <div className="settings-section-card settings-key-card">
-                      <div className="settings-input-header">
-                        <label className="settings-label">
-                          <Zap size={14} style={{ color: '#ff5a36' }} />
-                          <span>Groq API Key (Agent 1 Actuator)</span>
-                        </label>
-                        <button
-                          type="button"
-                          className="settings-btn-action"
-                          style={{ padding: '2px 8px', fontSize: '10px' }}
-                          onClick={() => handleTestPing('groq', groqApiKey, agent1Model)}
-                          disabled={pingTesting || !groqApiKey}
-                        >
-                          Test ⚡
-                        </button>
-                      </div>
-                      <input
-                        type="password"
-                        className="settings-text-input"
-                        placeholder="gsk_..."
-                        value={groqApiKey}
-                        onChange={(e) => updateGroqApiKey(e.target.value)}
-                      />
-                      <p className="settings-help-text">
-                        Powers ultra-fast token generation for UI clicking and screen guidance.
-                      </p>
-                    </div>
+                    <MaskedKeyInput
+                      label="Google Gemini API Key"
+                      envName="GEMINI_API_KEY"
+                      icon={<Brain size={14} style={{ color: '#c084fc' }} />}
+                      isConfigured={Boolean(geminiApiKey && geminiApiKey.trim())}
+                      onSave={(val) => updateGeminiApiKey(val)}
+                      onClear={() => {
+                        updateGeminiApiKey('');
+                        localStorage.removeItem('blinky_gemini_api_key');
+                      }}
+                      description="Enables Gemini multimodal synthesis, grounding, and reasoning."
+                      testAction={() => handleTestPing('gemini', geminiApiKey, geminiModel)}
+                      testDisabled={pingTesting}
+                    />
 
-                    <div className="settings-section-card settings-key-card">
-                      <div className="settings-input-header">
-                        <label className="settings-label">
-                          <Brain size={14} style={{ color: '#c084fc' }} />
-                          <span>Google Gemini API Key (Agent 2 RAG)</span>
-                        </label>
-                        <button
-                          type="button"
-                          className="settings-btn-action"
-                          style={{ padding: '2px 8px', fontSize: '10px' }}
-                          onClick={() => handleTestPing('gemini', geminiApiKey, geminiModel)}
-                          disabled={pingTesting || !geminiApiKey}
-                        >
-                          Test ⚡
-                        </button>
-                      </div>
-                      <input
-                        type="password"
-                        className="settings-text-input"
-                        placeholder="AIzaSy..."
-                        value={geminiApiKey}
-                        onChange={(e) => updateGeminiApiKey(e.target.value)}
-                      />
-                      <p className="settings-help-text">
-                        Enables Gemini 2.5 Flash multimodal synthesis and Google Search grounding.
-                      </p>
-                    </div>
+                    <MaskedKeyInput
+                      label="Google Cloud Vertex Project ID"
+                      envName="VERTEX_PROJECT_ID"
+                      icon={<Cloud size={14} style={{ color: '#60a5fa' }} />}
+                      isConfigured={Boolean(vertexProjectId && vertexProjectId.trim())}
+                      onSave={(val) => updateVertexProjectId(val)}
+                      onClear={() => updateVertexProjectId('')}
+                      description="Project ID for Google Cloud Vertex AI enterprise model calls."
+                    />
 
-                    <div className="settings-section-card settings-key-card">
-                      <div className="settings-input-header">
-                        <label className="settings-label">
-                          <Brain size={14} style={{ color: '#38bdf8' }} />
-                          <span>DeepSeek API Key</span>
-                        </label>
-                        <button
-                          type="button"
-                          className="settings-btn-action"
-                          style={{ padding: '2px 8px', fontSize: '10px' }}
-                          onClick={() => handleTestPing('deepseek', deepseekApiKey, 'deepseek-chat')}
-                          disabled={pingTesting || !deepseekApiKey}
-                        >
-                          Test ⚡
-                        </button>
-                      </div>
-                      <input
-                        type="password"
-                        className="settings-text-input"
-                        placeholder="sk-..."
-                        value={deepseekApiKey}
-                        onChange={(e) => updateDeepseekApiKey(e.target.value)}
-                      />
-                      <p className="settings-help-text">
-                        Powers deep reasoning actuator routines.
-                      </p>
-                    </div>
+                    <MaskedKeyInput
+                      label="OpenAI API Key"
+                      envName="OPENAI_API_KEY"
+                      icon={<Sparkles size={14} style={{ color: '#10b981' }} />}
+                      isConfigured={Boolean(openaiApiKey && openaiApiKey.trim())}
+                      onSave={(val) => updateOpenaiApiKey(val)}
+                      onClear={() => updateOpenaiApiKey('')}
+                      description="Enables OpenAI Codex and GPT reasoning models."
+                    />
+
+                    <MaskedKeyInput
+                      label="Groq API Key"
+                      envName="GROQ_API_KEY"
+                      icon={<Zap size={14} style={{ color: '#ff5a36' }} />}
+                      isConfigured={Boolean(groqApiKey && groqApiKey.trim())}
+                      onSave={(val) => void updateGroqApiKey(val)}
+                      onClear={() => {
+                        void updateGroqApiKey('');
+                        localStorage.removeItem('blinky_groq_api_key');
+                      }}
+                      description="Powers ultra-fast token generation for computer-use and screen actuation."
+                      testAction={() => handleTestPing('groq', groqApiKey, agent1Model)}
+                      testDisabled={pingTesting}
+                    />
+
+                    <MaskedKeyInput
+                      label="DeepSeek API Key"
+                      envName="DEEPSEEK_API_KEY"
+                      icon={<Brain size={14} style={{ color: '#38bdf8' }} />}
+                      isConfigured={Boolean(deepseekApiKey && deepseekApiKey.trim())}
+                      onSave={(val) => void updateDeepseekApiKey(val)}
+                      onClear={() => {
+                        void updateDeepseekApiKey('');
+                        localStorage.removeItem('blinky_deepseek_api_key');
+                      }}
+                      description="Powers deep reasoning actuator routines."
+                      testAction={() => handleTestPing('deepseek', deepseekApiKey, 'deepseek-chat')}
+                      testDisabled={pingTesting}
+                    />
 
                     <div className="settings-section-card settings-key-card">
                       <div className="settings-input-header">
@@ -3818,7 +3965,7 @@ export function CommandBar() {
                     <div className="settings-section-title">
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <Smartphone size={16} style={{ color: '#ff5a36' }} />
-                        <span>Blinky Mobile Companion</span>
+                        <span>Clinky Mobile Companion</span>
                       </div>
                       <span className="agent-badge-pill ember">Local Encrypted Link</span>
                     </div>
@@ -3849,7 +3996,7 @@ export function CommandBar() {
                     {pairingPayload && !pairingError && (
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', textAlign: 'center' }}>
                         <p style={{ margin: 0, fontSize: '12px', color: '#cbd5e1' }}>
-                          Scan this QR code from your Blinky Mobile app (Pair tab):
+                          Scan this QR code from your Clinky Mobile app (Pair tab):
                         </p>
 
                         {pairingPayload.ips.length > 1 && (
@@ -3918,7 +4065,7 @@ export function CommandBar() {
                         <span className="agent-badge-pill ember">System-Wide</span>
                       </div>
                       <p className="settings-help-text">
-                        Press this key combination from any application on Windows to instantly summon Blinky.
+                        Press this key combination from any application on Windows to instantly summon Clinky.
                       </p>
 
                       <div className="settings-shortcut-grid">
@@ -3951,7 +4098,7 @@ export function CommandBar() {
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <div>
                           <div style={{ fontSize: '12px', fontWeight: 600, color: '#f1f5f9' }}>Hold Mic Button / Hotkey</div>
-                          <div style={{ fontSize: '11px', color: '#94a3b8' }}>Streams speech directly to Blinky's voice pipeline</div>
+                          <div style={{ fontSize: '11px', color: '#94a3b8' }}>Streams speech directly to Clinky's voice pipeline</div>
                         </div>
                         <span className="agent-badge-pill emerald">Win + Space</span>
                       </div>
@@ -3983,12 +4130,12 @@ export function CommandBar() {
                     </div>
                     <div>
                       <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff', fontFamily: 'Astonpoliz, Okine Sans, sans-serif' }}>
-                        Blinky Desktop
+                        Clinky Desktop
                       </h3>
-                      <span className="agent-badge-pill ember">v1.0.0 Production</span>
+                      <span className="agent-badge-pill ember">v0.2.0</span>
                     </div>
                     <p style={{ margin: '4px 0 0 0', fontSize: '11.5px', color: '#94a3b8', maxWidth: '380px' }}>
-                      The Vision-Guided Autonomous AI Companion for Windows. Unified multi-agent intelligence with local computer-use actuation and streaming voice.
+                      The Windows AI Buddy. Unified multi-agent intelligence with local computer-use actuation and streaming voice.
                     </p>
 
                     <div className="settings-about-grid">

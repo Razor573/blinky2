@@ -1306,7 +1306,7 @@ fn start_wake_word_detector(app: &AppHandle) {
 pub fn run() {
     #[cfg(target_os = "windows")]
     if !acquire_single_instance() {
-        eprintln!("Blinky is already running; ignoring the duplicate launch.");
+        eprintln!("Clinky is already running; ignoring the duplicate launch.");
         return;
     }
 
@@ -1443,7 +1443,7 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("failed to run Blinky");
+        .expect("failed to run Clinky");
 }
 
 #[cfg(target_os = "windows")]
@@ -1453,7 +1453,7 @@ fn acquire_single_instance() -> bool {
     use windows_sys::Win32::System::Threading::CreateMutexW;
 
     static INSTANCE_MUTEX: OnceLock<isize> = OnceLock::new();
-    let name: Vec<u16> = "Local\\Blinky.Desktop.SingleInstance"
+    let name: Vec<u16> = "Local\\Clinky.Desktop.SingleInstance"
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
@@ -1476,8 +1476,8 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Exit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_command, &quit])?;
 
-    let mut tray = TrayIconBuilder::with_id("blinky")
-        .tooltip("Blinky")
+    let mut tray = TrayIconBuilder::with_id("clinky")
+        .tooltip("Clinky")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
