@@ -1174,164 +1174,334 @@ def extract_channel_from_query(query: str) -> str | None:
 
 
 async def resolve_youtube_video_url(video_query: str) -> str | None:
-    import urllib.parse
+    # SearXNG disabled. Return None to launch direct YouTube search.
+    return None
 
-    from wil.http_fetcher import fetch_html
-    from wil.searxng_client import SearXNGClient
 
-    # Try to extract a channel name if it's a "latest video" query
-    channel_name = extract_channel_from_query(video_query)
+def open_spotify_uri(track_uri: str, song_name: str | None = None) -> ToolResult:
+    if os.name == "nt":
+        try:
+            import time
+            import win32gui
+            import win32con
 
-    if channel_name:
-        LOGGER.info(f"Detected latest video query for channel: '{channel_name}'")
-        # 1. Search for the channel on SearXNG
-        client = SearXNGClient()
-        search_query = f"{channel_name} youtube channel"
-        channel_url = None
+            _emit_tool_status("Opening Spotify track...")
+
+            # Detect if Spotify is currently playing by checking the window title.
+            # When paused, the title is typically "Spotify", "Spotify Premium", etc.
+            # When playing, the title is "Artist - Song".
+            is_playing = False
+            import win32process
+            import psutil
+
+            spotify_pids = set()
+            try:
+                for proc in psutil.process_iter(['pid', 'name']):
+                    if proc.info['name'] and proc.info['name'].lower() == "spotify.exe":
+                        spotify_pids.add(proc.info['pid'])
+            except Exception:
+                pass
+
+            hwnds: list[int] = []
+            def _find_spotify(h: int, extra: list) -> bool:
+                if win32gui.IsWindowVisible(h):
+                    try:
+                        _, pid = win32process.GetWindowThreadProcessId(h)
+                        if pid in spotify_pids:
+                            if win32gui.GetWindowText(h).strip():
+                                extra.append(h)
+                    except Exception:
+                        pass
+                return True
+
+            try:
+                win32gui.EnumWindows(_find_spotify, hwnds)
+            except Exception as e:
+                LOGGER.warning("Could not enumerate windows: %s", e)
+            if hwnds:
+                spotify_hwnd = hwnds[0]
+                title_text = win32gui.GetWindowText(spotify_hwnd).lower().strip()
+                if title_text and title_text not in ("spotify", "spotify premium", "spotify free", "spotify player"):
+                    is_playing = True
+                    LOGGER.info("Spotify is actively playing a song (title='%s'). Pausing first...", title_text)
+
+            # Only pause if a song is actively playing.
+            # This prevents toggling pause to play if Spotify was already paused.
+            if is_playing:
+                shortcut_tool("media_play_pause")
+                time.sleep(0.05)  # 50ms — let Spotify register the pause
+
+            # On Windows, os.startfile with a spotify:track: URI triggers the
+            # Spotify protocol handler which immediately starts playback.
+            os.startfile(track_uri)
+
+            # Bring Spotify window to foreground (best-effort, fast).
+            time.sleep(0.3)
+            if hwnds:
+                try:
+                    hwnd = hwnds[0]
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                    win32gui.SetForegroundWindow(hwnd)
+                    LOGGER.info("Brought Spotify window to foreground (hwnd=%d)", hwnd)
+                except Exception as fe:
+                    LOGGER.debug("Could not bring Spotify window to foreground: %s", fe)
+
+            return ToolResult(
+                True,
+                "open_spotify_uri",
+                "Opened Spotify URI. Playback started via URI handler.",
+                {"method": "os.startfile"},
+            )
+        except Exception as exc:
+            return ToolResult(
+                False,
+                "open_spotify_uri",
+                str(exc),
+                {"method": "os.startfile", "error": str(exc)},
+            )
+
+
+
+
+    if platform.system() == "Linux":
+        linux_result = open_spotify_uri_linux(track_uri)
+        if linux_result.success:
+            return linux_result
+        web_url = spotify_uri_to_web_url(track_uri)
+        if web_url and webbrowser.open(web_url):
+            return ToolResult(
+                True,
+                "open_spotify_uri",
+                "Opened Spotify track in the browser because the desktop URI handler was unavailable.",
+                {
+                    "method": "spotify_web_fallback",
+                    "url": web_url,
+                    "linux_error": linux_result.message,
+                },
+            )
+        return linux_result
+
+    web_url = spotify_uri_to_web_url(track_uri)
+    if web_url and webbrowser.open(web_url):
+        return ToolResult(
+            True,
+            "open_spotify_uri",
+            "Opened Spotify track in the browser.",
+            {"method": "webbrowser", "url": web_url},
+        )
+    return ToolResult(
+        False,
+        "open_spotify_uri",
+        "No supported Spotify URI opener found for this OS.",
+        {"track_uri": track_uri},
+    )
+
+
+def seek_spotify_tool(seconds: int, forward: bool) -> ToolResult:
+    if os.name != "nt":
+        return ToolResult(
+            False,
+            "seek_spotify",
+            "Seeking is currently supported on Windows only.",
+            {"seconds": seconds, "forward": forward},
+        )
+
+    try:
+        import win32gui
+        import win32con
+        import time
+        from pywinauto.keyboard import send_keys
+
+        # Find Spotify window by process name (spotify.exe)
+        import win32process
+        import psutil
+
+        spotify_pids = set()
+        try:
+            for proc in psutil.process_iter(['pid', 'name']):
+                if proc.info['name'] and proc.info['name'].lower() == "spotify.exe":
+                    spotify_pids.add(proc.info['pid'])
+        except Exception:
+            pass
+
+        hwnds = []
+        def _find_spotify(h: int, extra: list) -> bool:
+            if win32gui.IsWindowVisible(h):
+                try:
+                    # Only match windows owned by spotify.exe process
+                    _, pid = win32process.GetWindowThreadProcessId(h)
+                    if pid in spotify_pids:
+                        # Require a non-empty window title to isolate the main window
+                        if win32gui.GetWindowText(h).strip():
+                            extra.append(h)
+                except Exception:
+                    pass
+            return True
 
         try:
-            results = await client.search_category(
-                search_query, category="general", limit=5
-            )
-            for r in results:
-                url = r.get("url", "")
-                if "youtube.com/" in url:
-                    # Filter out watch pages, search pages, etc. We want channel profiles.
-                    if any(p in url for p in ["/channel/", "/c/", "/user/", "/@"]):
-                        if "/watch?" not in url and "/results?" not in url:
-                            channel_url = url
-                            break
+            win32gui.EnumWindows(_find_spotify, hwnds)
         except Exception as e:
-            LOGGER.warning(f"SearXNG search for channel '{channel_name}' failed: {e}")
-
-        # DuckDuckGo fallback for channel search
-        if not channel_url:
-            try:
-                query_encoded = urllib.parse.quote(search_query)
-                url = f"https://html.duckduckgo.com/html/?q={query_encoded}"
-                html = await fetch_html(url)
-                if html:
-                    unquoted_html = urllib.parse.unquote(html)
-                    patterns = [
-                        r"youtube\.com/channel/([a-zA-Z0-9_-]+)",
-                        r"youtube\.com/(@[a-zA-Z0-9_\.-]+)",
-                        r"youtube\.com/c/([a-zA-Z0-9_-]+)",
-                        r"youtube\.com/user/([a-zA-Z0-9_-]+)",
-                    ]
-                    for pattern in patterns:
-                        matches = re.findall(pattern, unquoted_html)
-                        if matches:
-                            m = matches[0]
-                            if pattern == patterns[0]:
-                                channel_url = f"https://www.youtube.com/channel/{m}"
-                            elif pattern == patterns[1]:
-                                channel_url = f"https://www.youtube.com/@{m}"
-                            elif pattern == patterns[2]:
-                                channel_url = f"https://www.youtube.com/c/{m}"
-                            elif pattern == patterns[3]:
-                                channel_url = f"https://www.youtube.com/user/{m}"
-                            break
-            except Exception as e:
-                LOGGER.warning(
-                    f"DuckDuckGo fallback search for channel '{channel_name}' failed: {e}"
-                )
-
-        # 2. Construct videos page URL and fetch
-        if channel_url:
-            parsed = urllib.parse.urlparse(channel_url)
-            path_parts = [p for p in parsed.path.split("/") if p]
-
-            base_path = ""
-            if path_parts:
-                if path_parts[0] in ["channel", "user", "c"]:
-                    if len(path_parts) >= 2:
-                        base_path = f"/{path_parts[0]}/{path_parts[1]}"
-                elif path_parts[0].startswith("@"):
-                    base_path = f"/{path_parts[0]}"
-
-            if base_path:
-                videos_url = f"https://www.youtube.com{base_path}/videos"
-                LOGGER.info(f"Resolved videos page URL: {videos_url}")
-
-                try:
-                    html = await fetch_html(videos_url)
-                    if html:
-                        pattern = r"ytInitialData\s*=\s*({.+?});\s*</script>"
-                        match = re.search(pattern, html, re.DOTALL)
-                        if match:
-                            data = json.loads(match.group(1))
-
-                            # Recursively find lockupViewModel objects to get the first video
-                            videos = []
-
-                            def search_videos(item):
-                                if isinstance(item, dict):
-                                    if "lockupViewModel" in item:
-                                        vm = item["lockupViewModel"]
-                                        content_id = vm.get("contentId", "")
-                                        on_tap = (
-                                            vm.get("rendererContext", {})
-                                            .get("commandContext", {})
-                                            .get("onTap", {})
-                                            .get("innertubeCommand", {})
-                                        )
-                                        watch_endpoint = on_tap.get("watchEndpoint", {})
-                                        video_id = watch_endpoint.get(
-                                            "videoId", content_id
-                                        )
-                                        if video_id:
-                                            videos.append(video_id)
-                                    for k, v in item.items():
-                                        search_videos(v)
-                                elif isinstance(item, list):
-                                    for sub in item:
-                                        search_videos(sub)
-
-                            search_videos(data)
-                            if videos:
-                                latest_video_id = videos[0]
-                                LOGGER.info(f"Found latest video ID: {latest_video_id}")
-                                return (
-                                    f"https://www.youtube.com/watch?v={latest_video_id}"
-                                )
-                except Exception as e:
-                    LOGGER.warning(f"Failed to fetch or parse channel videos page: {e}")
-
-    # Fallback to general query search on SearXNG
-    LOGGER.info(f"Performing general YouTube video search for query: '{video_query}'")
-    try:
-        client = SearXNGClient()
-        results = await client.search_category(
-            f"{video_query} youtube watch", category="general", limit=5
-        )
-        for r in results:
-            url = r.get("url", "")
-            if "youtube.com/watch?v=" in url or "youtu.be/" in url:
-                return url
-    except Exception as e:
-        LOGGER.warning(f"General SearXNG search for '{video_query}' failed: {e}")
-
-    # Fallback to general query search on DuckDuckGo
-    try:
-        query_encoded = urllib.parse.quote(f"site:youtube.com/watch {video_query}")
-        url = f"https://html.duckduckgo.com/html/?q={query_encoded}"
-        html = await fetch_html(url)
-        if html:
-            unquoted_html = urllib.parse.unquote(html)
-            matches = re.findall(
-                r"youtube\.com/watch\?v=([a-zA-Z0-9_-]+)", unquoted_html
+            LOGGER.warning("Could not enumerate windows: %s", e)
+        if not hwnds:
+            return ToolResult(
+                False,
+                "seek_spotify",
+                "Spotify window not found. Make sure Spotify is open.",
+                {"seconds": seconds, "forward": forward},
             )
-            if matches:
-                return f"https://www.youtube.com/watch?v={matches[0]}"
-            matches_be = re.findall(r"youtu\.be/([a-zA-Z0-9_-]+)", unquoted_html)
-            if matches_be:
-                return f"https://www.youtube.com/watch?v={matches_be[0]}"
+
+        spotify_hwnd = hwnds[0]
+        prev_hwnd = win32gui.GetForegroundWindow()
+
+        # Bring Spotify to foreground
+        win32gui.ShowWindow(spotify_hwnd, win32con.SW_RESTORE)
+        win32gui.SetForegroundWindow(spotify_hwnd)
+        time.sleep(0.1)  # small pause to ensure focus is registered
+
+        # Calculate number of keypresses (each shift+right/left is 5 seconds)
+        presses = max(1, int(round(seconds / 5.0)))
+        key_str = "+{RIGHT}" if forward else "+{LEFT}"
+
+        _emit_tool_status(f"Seeking {'forward' if forward else 'backward'} by {seconds} seconds...")
+
+        for _ in range(presses):
+            send_keys(key_str)
+            time.sleep(0.05)
+
+        # Restore previous focused window
+        if prev_hwnd and prev_hwnd != spotify_hwnd:
+            try:
+                win32gui.SetForegroundWindow(prev_hwnd)
+            except Exception:
+                pass
+
+        direction = "forward" if forward else "backward"
+        return ToolResult(
+            True,
+            "seek_spotify",
+            f"Sought {direction} by {seconds} seconds in Spotify.",
+            {"seconds": seconds, "forward": forward, "presses": presses},
+        )
     except Exception as e:
-        LOGGER.warning(
-            f"DuckDuckGo fallback search for video '{video_query}' failed: {e}"
+        LOGGER.exception("Error in seek_spotify_tool")
+        return ToolResult(
+            False,
+            "seek_spotify",
+            f"Failed to seek: {str(e)}",
+            {"seconds": seconds, "forward": forward},
         )
 
-    return None
+
+
+def open_spotify_uri_linux(track_uri: str) -> ToolResult:
+    opener_commands = [
+        ["xdg-open", track_uri],
+        ["gio", "open", track_uri],
+        ["kde-open5", track_uri],
+        ["kde-open", track_uri],
+    ]
+    errors: list[str] = []
+    for cmd in opener_commands:
+        if not shutil.which(cmd[0]):
+            continue
+        try:
+            completed = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10,
+            )
+            if completed.returncode == 0:
+                return ToolResult(
+                    True,
+                    "open_spotify_uri",
+                    "Opened Spotify URI.",
+                    {"method": cmd[0], "track_uri": track_uri},
+                )
+            errors.append(
+                f"{cmd[0]} exited {completed.returncode}: {(completed.stderr or '').strip()}"
+            )
+        except Exception as exc:
+            errors.append(f"{cmd[0]} failed: {exc}")
+
+    app_commands = [
+        ["spotify", f"--uri={track_uri}"],
+        ["flatpak", "run", "com.spotify.Client", f"--uri={track_uri}"],
+        ["snap", "run", "spotify", track_uri],
+    ]
+    for cmd in app_commands:
+        if not shutil.which(cmd[0]):
+            continue
+        try:
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return ToolResult(
+                True,
+                "open_spotify_uri",
+                "Launched Spotify with URI.",
+                {"method": " ".join(cmd[:3]), "track_uri": track_uri},
+            )
+        except Exception as exc:
+            errors.append(f"{' '.join(cmd[:3])} failed: {exc}")
+
+    message = (
+        "; ".join(errors)
+        if errors
+        else "No Linux Spotify opener command was available."
+    )
+    return ToolResult(
+        False, "open_spotify_uri", message, {"track_uri": track_uri, "errors": errors}
+    )
+
+
+def spotify_uri_to_web_url(track_uri: str) -> str | None:
+    match = re.fullmatch(r"spotify:track:([a-zA-Z0-9]+)", track_uri.strip())
+    if not match:
+        return None
+    return f"https://open.spotify.com/track/{match.group(1)}"
+
+
+def clean_song_query(query: str) -> str:
+    query = " ".join(query.strip().split())
+
+    strip_words = {
+        "any",
+        "latest",
+        "new",
+        "newest",
+        "some",
+        "a",
+        "the",
+        "recent",
+        "trending",
+        "popular",
+        "song",
+        "track",
+        "music",
+        "artist",
+        "singer",
+        "playlist",
+        "by",
+    }
+
+    words = query.split()
+    changed = True
+    while changed and words:
+        changed = False
+        if words[0].lower() in strip_words:
+            words.pop(0)
+            changed = True
+        elif words and words[-1].lower() in strip_words:
+            words.pop()
+            changed = True
+
+    cleaned = " ".join(words).strip()
+    return cleaned if cleaned else query
 
 
 # ---------------------------------------------------------------------------

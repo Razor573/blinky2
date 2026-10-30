@@ -1842,7 +1842,9 @@ def run_web_intelligence(
     warnings: list[str],
 ) -> dict:
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
-    if gemini_key:
+    vertex_proj = os.getenv("VERTEX_PROJECT_ID", "").strip() or os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+    provider = (os.getenv("BLINKY_AI_PROVIDER") or "").strip().lower()
+    if gemini_key or provider == "vertex" or vertex_proj:
         try:
             from ai.gemini_client import ask_gemini_text
             _emit_status("web_intelligence", "Searching with Google Grounding and synthesizing intelligence...")
@@ -1882,13 +1884,13 @@ def run_web_intelligence(
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     return {
-        "summary": "Google Search Grounding requires a valid Gemini API key in Settings.",
+        "summary": "Google Search Grounding requires a valid Gemini API key or Vertex Project in Settings.",
         "steps": [],
         "active_app": {"title": "", "process": "", "supported": False},
         "ocr": {"count": 0, "items": []},
         "elapsed_ms": elapsed_ms,
         "provider": get_provider_label(),
-        "warnings": warnings + ["Google Search Grounding requires GEMINI_API_KEY."],
+        "warnings": warnings + ["Google Search Grounding requires GEMINI_API_KEY or VERTEX_PROJECT_ID."],
         "is_continuation": False,
         "web": {
             "needs_web_search": True,

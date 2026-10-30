@@ -60,6 +60,10 @@ def _get_gemini_client():
                 if api_key:
                     break
         if not api_key:
+            vertex_proj = (os.getenv("VERTEX_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+            provider = (os.getenv("BLINKY_AI_PROVIDER") or "").strip().lower()
+            if (provider == "vertex" or vertex_proj) and not api_key:
+                return genai.Client(vertexai=True, project=vertex_proj or None, location="us-central1", http_options=types.HttpOptions(timeout=20_000))
             return None
         # The SDK takes milliseconds, not seconds.
         return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=20_000))
