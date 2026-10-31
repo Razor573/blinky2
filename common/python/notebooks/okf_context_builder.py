@@ -1,3 +1,4 @@
+import re
 from html import escape
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -21,7 +22,15 @@ def build_okf_prompt_context(
     sources = notebook.get("sources", [])
     active_sources = [s for s in sources if s.get("active", True)]
 
-    if vector_matches:
+    is_full_content_query = bool(
+        re.search(
+            r"\b(?:full\s+(?:content|text)|entire|whole|all\s+of|everything|show\s+me\s+(?:the|all)|read\s+(?:the|all)|whats\s+in|what\s+is\s+in)\b",
+            query,
+            re.IGNORECASE,
+        )
+    )
+
+    if vector_matches and not is_full_content_query and any(score >= 0.05 for _, score in vector_matches):
         v_blocks = []
         for match, score in vector_matches:
             src_name = _escape_attr(match.get("source_name", "unknown"))

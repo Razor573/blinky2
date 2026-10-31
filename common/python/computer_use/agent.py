@@ -19,6 +19,7 @@ from .tools import (
     play_spotify_track_tool,
     play_youtube_video_tool,
     seek_spotify_tool,
+    clean_song_query,
     list_windows_tool,
     get_app_state_tool,
 )
@@ -76,12 +77,12 @@ OPEN_AND_TYPE_RE = re.compile(
 )
 
 PLAY_SPOTIFY_RE = re.compile(
-    r"^\s*play\s+(?:spotify\s+(?P<song1>.+)|(?P<song2>.+?)\s+(?:in|on)\s+spotify)\s*$",
+    r"^\s*(?:play|playa|palay|put\s+on|listen\s+to|stream)\s+(?:spotify\s+(?P<song1>.+)|(?P<song2>.+?)\s+(?:in|on)\s+spotify)\s*$",
     re.IGNORECASE,
 )
 
 PLAY_YOUTUBE_RE = re.compile(
-    r"^\s*play\s+(?:youtube\s+(?P<query1>.+)|(?P<query2>.+?)\s+(?:in|on)\s+youtube)\s*$",
+    r"^\s*(?:play|playa|palay|put\s+on|listen\s+to|stream)\s+(?:youtube\s+(?P<query1>.+)|(?P<query2>.+?)\s+(?:in|on)\s+youtube)\s*$",
     re.IGNORECASE,
 )
 
@@ -246,8 +247,17 @@ def try_run_agent_action(question: str, observation: dict[str, Any] | None = Non
     if wants_help_menu(question_cleaned, observation):
         return _get_tool("shortcut_tool")("alt+h")
 
+    if STOP_SPOTIFY_RE.match(question_cleaned):
+        return _get_tool("shortcut_tool")("media_play_pause")
+
+    # YouTube watch history intent check
+    from .tools import is_youtube_watch_history
+    is_history, topic = is_youtube_watch_history(question_cleaned)
+    if is_history:
+        return _get_tool("play_youtube_video_tool")(question_cleaned)
+
     colloquial_spotify = re.match(
-        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:put\s+on(?:\s+some)?|listen\s+to(?:\s+some)?|stream(?:\s+some)?|play(?:\s+some)?)\s+(?P<song>.+?)\s+(?:on|in|using)\s+spotify)\s*$",
+        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:put\s+on(?:\s+some)?|listen\s+to(?:\s+some)?|stream(?:\s+some)?|play(?:\s+some)?|playa(?:\s+some)?|palay(?:\s+some)?)\s+(?P<song>.+?)\s+(?:on|in|using)\s+spotify)\s*$",
         question_cleaned,
         re.IGNORECASE,
     )
@@ -257,7 +267,7 @@ def try_run_agent_action(question: str, observation: dict[str, Any] | None = Non
             return _get_tool("play_spotify_track_tool")(song.strip())
 
     open_and_play_spotify = re.match(
-        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:open|launch|start)\s+spotify\s+(?:and|to|then)\s+play\s+(?P<song>.+)|play\s+(?P<song2>.+?)\s+(?:in|on)\s+spotify)\s*$",
+        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:open|launch|start)\s+spotify\s+(?:and|to|then)\s+(?:play|playa|palay|put\s+on|listen\s+to|stream)\s+(?P<song>.+)|(?:play|playa|palay|put\s+on|listen\s+to|stream)\s+(?P<song2>.+?)\s+(?:in|on)\s+spotify)\s*$",
         question_cleaned,
         re.IGNORECASE,
     )
@@ -267,7 +277,7 @@ def try_run_agent_action(question: str, observation: dict[str, Any] | None = Non
             return _get_tool("play_spotify_track_tool")(song.strip())
 
     colloquial_yt = re.match(
-        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:put\s+on(?:\s+some)?|listen\s+to(?:\s+some)?|stream(?:\s+some)?|play(?:\s+some)?)\s+(?P<query>.+?)\s+(?:on|in|using)\s+youtube)\s*$",
+        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:put\s+on(?:\s+some)?|listen\s+to(?:\s+some)?|stream(?:\s+some)?|play(?:\s+some)?|playa(?:\s+some)?|palay(?:\s+some)?)\s+(?P<query>.+?)\s+(?:on|in|using)\s+youtube)\s*$",
         question_cleaned,
         re.IGNORECASE,
     )
@@ -277,7 +287,7 @@ def try_run_agent_action(question: str, observation: dict[str, Any] | None = Non
             return _get_tool("play_youtube_video_tool")(query.strip())
 
     open_and_play_yt = re.match(
-        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:open|launch|start)\s+youtube\s+(?:and|to|then)\s+(?:play|put\s+on|listen\s+to)\s+(?P<query>.+)|play\s+(?P<query2>.+?)\s+(?:in|on)\s+youtube)\s*$",
+        r"^\s*(?:(?:can\s+you\s+|please\s+)?(?:open|launch|start)\s+youtube\s+(?:and|to|then)\s+(?:play|playa|palay|put\s+on|listen\s+to|stream)\s+(?P<query>.+)|(?:play|playa|palay|put\s+on|listen\s+to|stream)\s+(?P<query2>.+?)\s+(?:in|on)\s+youtube)\s*$",
         question_cleaned,
         re.IGNORECASE,
     )

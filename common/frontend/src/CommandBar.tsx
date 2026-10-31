@@ -273,6 +273,7 @@ export function CommandBar() {
   };
 
   const [isRunning, setIsRunning] = useState(false);
+  const [isTaskCompleted, setIsTaskCompleted] = useState(false);
   const isRunningRef = useRef(false);
   useEffect(() => {
     isRunningRef.current = isRunning;
@@ -2067,6 +2068,7 @@ export function CommandBar() {
   };
 
   const toggleRecording = () => {
+    setIsTaskCompleted(false);
     if (!audioCtxRef.current) {
       audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
     } else if (audioCtxRef.current.state === 'suspended') {
@@ -2176,6 +2178,7 @@ export function CommandBar() {
     const conversationHistory = conversationHistoryRef.current.slice(-8);
 
     setIsRunning(true);
+    setIsTaskCompleted(false);
     setStatus('Thinking...');
     void emit('blinky://clinky-state', { state: 'thinking' });
     if (!options.preserveStepsDuringRun) {
@@ -2455,6 +2458,7 @@ export function CommandBar() {
         }
         isRunningRef.current = false;
         setIsRunning(false);
+        setIsTaskCompleted(true);
         if (!isPointing) {
           void emit('blinky://agent-cursor-done', {});
         }
@@ -2475,6 +2479,7 @@ export function CommandBar() {
     }
     isRunningRef.current = false;
     setIsRunning(false);
+    setIsTaskCompleted(false);
     setStatus('Stopped.');
     setSteps([]);
     void hideOverlay();
@@ -3191,6 +3196,7 @@ export function CommandBar() {
   }, [showSettings, showHistory, showWaModal, showMobileModal, waStatus, provider, voiceProvider]);
 
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setIsTaskCompleted(false);
     setQuestion(event.target.value);
     const textarea = event.target;
     textarea.style.height = 'auto';
@@ -3652,9 +3658,11 @@ export function CommandBar() {
                     : "Listening... click mic to stop (Win+Space)"
                   : isTranscribing
                     ? "Transcribing voice with Universal-3 Pro..."
-                    : assemblyaiApiKey || assemblyaiApiKeyRef.current
-                      ? `Ask anything or speak (Win+Space) • AssemblyAI ${assemblyaiVoiceMode === 'agent' ? 'Voice Agent' : 'Realtime STT'}`
-                      : "Ask anything... (Win+Space to speak)"
+                    : isTaskCompleted
+                      ? "Finished! Ask anything... (Win+Space to speak)"
+                      : assemblyaiApiKey || assemblyaiApiKeyRef.current
+                        ? `Ask anything or speak (Win+Space) • AssemblyAI ${assemblyaiVoiceMode === 'agent' ? 'Voice Agent' : 'Realtime STT'}`
+                        : "Ask anything... (Win+Space to speak)"
               }
               disabled={isTranscribing}
               autoFocus
@@ -3691,11 +3699,7 @@ export function CommandBar() {
                   className={`command-websearch-btn ${webSearchEnabled ? 'active' : ''}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    const nextEnabled = !webSearchEnabled;
-                    setWebSearchEnabled(nextEnabled);
-                    if (nextEnabled) {
-                      setAgentModeEnabled(false);
-                    }
+                    setWebSearchEnabled(!webSearchEnabled);
                   }}
                   disabled={isRunning || isTranscribing}
                   title="Toggle Web Search"
@@ -3707,11 +3711,7 @@ export function CommandBar() {
                   className={`command-agent-btn ${agentModeEnabled ? 'active' : ''}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    const nextEnabled = !agentModeEnabled;
-                    setAgentModeEnabled(nextEnabled);
-                    if (nextEnabled) {
-                      setWebSearchEnabled(false);
-                    }
+                    setAgentModeEnabled(!agentModeEnabled);
                   }}
                   disabled={isRunning || isTranscribing}
                   title="Toggle Agent Automation"
@@ -3793,6 +3793,12 @@ export function CommandBar() {
                         {preprocessMarkdown(status)}
                       </ReactMarkdown>
                     </span>
+                    {!isRunning && status && status !== defaultStatus && (
+                      <div className="task-completion-indicator">
+                        <span className="indicator-dot" />
+                        <span>Finished • Ready for next request</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

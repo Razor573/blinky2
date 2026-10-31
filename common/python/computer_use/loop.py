@@ -200,6 +200,16 @@ def build_system_prompt(
     except Exception:
         pass  # profile is advisory; never break the loop on detection failure
 
+    # Inject system memory, hardware configuration, and preferred default browser/player
+    try:
+        from memory.system_memory import get_system_memory_context
+
+        sys_mem = get_system_memory_context()
+        if sys_mem:
+            prompt += "\n\n" + sys_mem
+    except Exception:
+        pass
+
     # Append app inventory if provided
     if app_inventory:
         inventory_template = prompts.get("app_inventory", "")

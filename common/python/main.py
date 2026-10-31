@@ -450,7 +450,7 @@ def run(
         set_ignored_overlay_rects(ignored_rects)
 
     # PATH 1: Web search — purely SearXNG, never touches the screen
-    if web_search_enabled:
+    if web_search_enabled and not agent_mode:
         return run_web_intelligence(question, conversation_history, started, warnings)
 
     if agent_mode:
@@ -1956,7 +1956,7 @@ def run_notebook_intelligence(
     user_prompt = context_payload["user_prompt"]
 
     try:
-        response = ask_text_model(f"{system_prompt}\n\n{user_prompt}")
+        response = ask_text_model(f"{system_prompt}\n\n{user_prompt}", max_tokens=4096)
         if isinstance(response, dict):
             if response.get("answer"):
                 answer = response["answer"]
@@ -2980,6 +2980,12 @@ def merge_visible_items(ocr_items: list[dict], uia_items: list[dict]) -> list[di
 
 
 def main() -> None:
+    try:
+        from memory.system_memory import initialize_system_memory
+        initialize_system_memory()
+    except Exception as exc:
+        LOGGER.debug("System memory initialization skipped: %s", exc)
+
     try:
         payload = json.loads(sys.stdin.read() or "{}")
         if payload.get("action") in ("test_ai_model", "ping_model"):

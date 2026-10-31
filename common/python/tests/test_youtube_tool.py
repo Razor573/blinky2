@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 from computer_use.agent import try_run_agent_action
 from computer_use.tools import play_youtube_video_tool, extract_channel_from_query
 
@@ -34,27 +34,26 @@ def test_extract_channel_from_query():
     assert extract_channel_from_query("mythpat latest video") == "mythpat"
     assert extract_channel_from_query("play coding tutorial on youtube") is None
 
-@pytest.mark.asyncio
 @patch("computer_use.tools.webbrowser.open")
-@patch("computer_use.tools.resolve_youtube_video_url", new_callable=AsyncMock)
-async def test_play_youtube_success(mock_resolve, mock_open):
-    mock_resolve.return_value = "https://www.youtube.com/watch?v=_XxLyzgoRlU"
-    
+def test_play_youtube_success(mock_open):
     result = play_youtube_video_tool("latest video of mythpat")
-    
     assert result.success is True
-    assert result.details["video_url"] == "https://www.youtube.com/watch?v=_XxLyzgoRlU"
-    mock_open.assert_called_once_with("https://www.youtube.com/watch?v=_XxLyzgoRlU")
+    assert "mythpat" in result.details["video_url"]
+    mock_open.assert_called_once()
 
-@pytest.mark.asyncio
 @patch("computer_use.tools.webbrowser.open")
-@patch("computer_use.tools.resolve_youtube_video_url", new_callable=AsyncMock)
-async def test_play_youtube_fallback_on_fail(mock_resolve, mock_open):
-    mock_resolve.return_value = None
-    
+def test_play_youtube_fallback_on_fail(mock_open):
     result = play_youtube_video_tool("funny cats")
-    
     assert result.success is True
     assert "fallback_url" in result.details
     mock_open.assert_called_once()
     assert "search_query=funny%20cats" in mock_open.call_args[0][0]
+
+@patch("computer_use.tools.webbrowser.open")
+def test_play_youtube_watch_history(mock_open):
+    result = play_youtube_video_tool("the last cod video ive been watching")
+    assert result.success is True
+    assert result.details["history"] is True
+    assert result.details["topic"] == "cod"
+    assert "feed/history?query=cod" in result.details["video_url"]
+    mock_open.assert_called_once()

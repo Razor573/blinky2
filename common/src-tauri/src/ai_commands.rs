@@ -1366,17 +1366,30 @@ pub async fn transcribe_audio_native(
                     urlencoding::encode(&target_model),
                     urlencoding::encode(&key)
                 );
+                let is_transcribe_model = target_model.contains("transcribe");
+                let parts = if is_transcribe_model {
+                    json!([
+                        {
+                            "inlineData": {
+                                "mimeType": clean_mime,
+                                "data": audio_base64
+                            }
+                        }
+                    ])
+                } else {
+                    json!([
+                        { "text": "Transcribe this spoken audio accurately. Output ONLY the raw transcription without commentary, markdown, or timestamps." },
+                        {
+                            "inlineData": {
+                                "mimeType": clean_mime,
+                                "data": audio_base64
+                            }
+                        }
+                    ])
+                };
                 let payload = json!({
                     "contents": [{
-                        "parts": [
-                            { "text": "Transcribe this spoken audio accurately. Output ONLY the raw transcription without commentary, markdown, or timestamps." },
-                            {
-                                "inlineData": {
-                                    "mimeType": clean_mime,
-                                    "data": audio_base64
-                                }
-                            }
-                        ]
+                        "parts": parts
                     }]
                 });
 
@@ -1392,12 +1405,16 @@ pub async fn transcribe_audio_native(
 
                 let val: Value = res.json().await.map_err(|e| e.to_string())?;
                 let mut transcript = String::new();
-                if let Some(parts) = val["candidates"][0]["content"]["parts"].as_array() {
-                    for part in parts {
-                        if let Some(t) = part["audioTranscription"]["text"].as_str() {
-                            transcript.push_str(t);
-                        } else if let Some(t) = part["text"].as_str() {
-                            transcript.push_str(t);
+                if let Some(candidates) = val["candidates"].as_array() {
+                    if let Some(first_candidate) = candidates.first() {
+                        if let Some(parts) = first_candidate["content"]["parts"].as_array() {
+                            for part in parts {
+                                if let Some(t) = part["audioTranscription"]["text"].as_str() {
+                                    transcript.push_str(t);
+                                } else if let Some(t) = part["text"].as_str() {
+                                    transcript.push_str(t);
+                                }
+                            }
                         }
                     }
                 }

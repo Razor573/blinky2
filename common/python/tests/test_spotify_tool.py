@@ -31,11 +31,9 @@ def test_agent_routes_play_spotify_prefix():
 @patch("computer_use.tools.os.name", "posix")
 @patch("computer_use.tools.platform.system", return_value="Linux")
 @patch("computer_use.tools.open_spotify_uri_linux")
-@patch("wil.searxng_client.SearXNGClient.search_category", new_callable=AsyncMock)
-async def test_play_spotify_linux_uses_desktop_uri_handler(mock_search_category, mock_open_linux, mock_platform):
-    mock_search_category.return_value = [
-        {"url": "https://open.spotify.com/track/6qYkmqFsXbj8CQjAdbYz07", "title": "Blinding Lights"}
-    ]
+@patch("computer_use.tools.resolve_spotify_track_uri", new_callable=AsyncMock)
+async def test_play_spotify_linux_uses_desktop_uri_handler(mock_resolve, mock_open_linux, mock_platform):
+    mock_resolve.return_value = "spotify:track:6qYkmqFsXbj8CQjAdbYz07"
     mock_open_linux.return_value = ToolResult(
         True,
         "open_spotify_uri",
@@ -52,55 +50,51 @@ async def test_play_spotify_linux_uses_desktop_uri_handler(mock_search_category,
 
 @pytest.mark.asyncio
 @patch("computer_use.tools.os.name", "nt")
-@patch("computer_use.tools.os.startfile", create=True)
-@patch("wil.searxng_client.SearXNGClient.search_category", new_callable=AsyncMock)
-async def test_play_spotify_via_searxng_success(mock_search_category, mock_startfile):
-    # Mock SearXNG returning a valid spotify track URL
-    mock_search_category.return_value = [
-        {"url": "https://open.spotify.com/track/6qYkmqFsXbj8CQjAdbYz07", "title": "Blinding Lights"}
-    ]
-    
+@patch("computer_use.tools.open_spotify_uri")
+@patch("computer_use.tools.resolve_spotify_track_uri", new_callable=AsyncMock)
+async def test_play_spotify_via_grounding_success(mock_resolve, mock_open_spotify):
+    mock_resolve.return_value = "spotify:track:6qYkmqFsXbj8CQjAdbYz07"
+    mock_open_spotify.return_value = ToolResult(
+        True,
+        "open_spotify_uri",
+        "Opened Spotify URI.",
+        {"method": "os.startfile", "track_uri": "spotify:track:6qYkmqFsXbj8CQjAdbYz07"},
+    )
     result = play_spotify_track_tool("blinding lights")
     
     assert result.success is True
     assert result.details["track_uri"] == "spotify:track:6qYkmqFsXbj8CQjAdbYz07"
-    mock_startfile.assert_called_once_with("spotify:track:6qYkmqFsXbj8CQjAdbYz07")
-    assert mock_search_category.call_count == 2
+    mock_open_spotify.assert_called_once_with("spotify:track:6qYkmqFsXbj8CQjAdbYz07", song_name="blinding lights")
 
 @pytest.mark.asyncio
 @patch("computer_use.tools.os.name", "nt")
-@patch("computer_use.tools.os.startfile", create=True)
-@patch("wil.searxng_client.SearXNGClient.search_category", new_callable=AsyncMock)
-@patch("wil.http_fetcher.fetch_html", new_callable=AsyncMock)
-async def test_play_spotify_via_ddg_fallback(mock_fetch_html, mock_search_category, mock_startfile):
-    # 1. SearXNG fails (raises exception or returns empty)
-    mock_search_category.side_effect = Exception("SearXNG down")
-    
-    # 2. DuckDuckGo returns HTML containing track ID
-    mock_fetch_html.return_value = """
-    <html>
-        <body>
-            <a href="https://open.spotify.com/track/6qYkmqFsXbj8CQjAdbYz07">Blinding Lights</a>
-        </body>
-    </html>
-    """
-    
+@patch("computer_use.tools.open_spotify_uri")
+@patch("computer_use.tools.resolve_spotify_track_uri", new_callable=AsyncMock)
+async def test_play_spotify_via_search_uri_fallback(mock_resolve, mock_open_spotify):
+    mock_resolve.return_value = None
+    mock_open_spotify.return_value = ToolResult(
+        True,
+        "open_spotify_uri",
+        "Opened Spotify URI.",
+        {"method": "os.startfile"},
+    )
     result = play_spotify_track_tool("blinding lights")
     
     assert result.success is True
-    assert result.details["track_uri"] == "spotify:track:6qYkmqFsXbj8CQjAdbYz07"
-    mock_startfile.assert_called_once_with("spotify:track:6qYkmqFsXbj8CQjAdbYz07")
-    mock_fetch_html.assert_called_once()
+    assert "spotify:search:blinding%20lights" in result.details["track_uri"]
 
 @pytest.mark.asyncio
 @patch("computer_use.tools.os.name", "nt")
-@patch("wil.searxng_client.SearXNGClient.search_category", new_callable=AsyncMock)
-@patch("wil.http_fetcher.fetch_html", new_callable=AsyncMock)
-async def test_play_spotify_not_found(mock_fetch_html, mock_search_category):
-    # Both search attempts fail to return any track URL
-    mock_search_category.return_value = []
-    mock_fetch_html.return_value = "<html>No results</html>"
-    
+@patch("computer_use.tools.open_spotify_uri")
+@patch("computer_use.tools.resolve_spotify_track_uri", new_callable=AsyncMock)
+async def test_play_spotify_not_found(mock_resolve, mock_open_spotify):
+    mock_resolve.return_value = None
+    mock_open_spotify.return_value = ToolResult(
+        False,
+        "open_spotify_uri",
+        "Launch failed",
+        {},
+    )
     result = play_spotify_track_tool("some unknown track 12345")
     
     assert result.success is False
@@ -109,7 +103,7 @@ async def test_play_spotify_not_found(mock_fetch_html, mock_search_category):
 def test_clean_song_query():
     from computer_use.tools import clean_song_query
     assert clean_song_query("any latest subh song") == "subh"
-    assert clean_song_query("play cheques") == "play cheques"
+    assert clean_song_query("play cheques") == "cheques"
     assert clean_song_query("the blinding lights") == "blinding lights"
     assert clean_song_query("latest new song by shubh") == "shubh"
 

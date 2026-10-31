@@ -18,6 +18,7 @@ from utils.logging import get_logger
 LOGGER = get_logger("blinky.computer_use")
 
 IS_LINUX = platform.system() == "Linux"
+IS_WINDOWS = platform.system() == "Windows"
 
 _WAYLAND_VISION_AVAILABLE = False
 try:
@@ -111,6 +112,11 @@ SAFE_PROCESS_ALIASES = {
     "file explorer": "explorer.exe",
     "explorer": "explorer.exe",
     "windows explorer": "explorer.exe",
+    "browser": "msedge.exe",
+    "web browser": "msedge.exe",
+    "internet": "msedge.exe",
+    "edge": "msedge.exe",
+    "microsoft edge": "msedge.exe",
 }
 
 APP_PROTOCOLS = {
@@ -141,6 +147,9 @@ APP_NAME_ALIASES = {
     "whats app": "whatsapp",
     "whatsapp desktop": "whatsapp",
     "spotify desktop": "spotify",
+    "browser": "edge",
+    "web browser": "edge",
+    "default browser": "edge",
 }
 
 WEB_DESTINATION_URLS = {
@@ -708,6 +717,7 @@ def normalize_shortcut_linux(shortcut: str) -> str:
 
 def play_spotify_track_tool(song_name: str) -> ToolResult:
     import asyncio
+    song_name = clean_song_query(song_name)
 
     try:
         import threading
@@ -841,20 +851,52 @@ def open_spotify_uri(track_uri: str, song_name: str | None = None) -> ToolResult
                 shortcut_tool("media_play_pause")
                 time.sleep(0.05)  # 50ms — let Spotify register the pause
 
-            # On Windows, os.startfile with a spotify:track: URI triggers the
-            # Spotify protocol handler which immediately starts playback.
+            # On Windows, os.startfile with a spotify:track: or spotify:search: URI triggers the
+            # Spotify protocol handler.
             os.startfile(track_uri)
 
-            # Bring Spotify window to foreground (best-effort, fast).
-            time.sleep(0.3)
-            if hwnds:
+            if track_uri.startswith("spotify:search:"):
+                # Wait 700ms, bring Spotify to foreground, and simulate VK_RETURN (0x0D) and VK_MEDIA_PLAY_PAUSE (0xB3)
+                time.sleep(0.7)
+                if not hwnds:
+                    try:
+                        win32gui.EnumWindows(_find_spotify, hwnds)
+                    except Exception:
+                        pass
+                if hwnds:
+                    try:
+                        hwnd = hwnds[0]
+                        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                        win32gui.SetForegroundWindow(hwnd)
+                        LOGGER.info("Brought Spotify window to foreground for search autoplay (hwnd=%d)", hwnd)
+                    except Exception as fe:
+                        LOGGER.debug("Could not bring Spotify window to foreground: %s", fe)
+                time.sleep(0.2)
                 try:
-                    hwnd = hwnds[0]
-                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                    win32gui.SetForegroundWindow(hwnd)
-                    LOGGER.info("Brought Spotify window to foreground (hwnd=%d)", hwnd)
-                except Exception as fe:
-                    LOGGER.debug("Could not bring Spotify window to foreground: %s", fe)
+                    import ctypes
+                    VK_RETURN = 0x0D
+                    VK_MEDIA_PLAY_PAUSE = 0xB3
+                    KEYEVENTF_KEYUP = 0x0002
+                    ctypes.windll.user32.keybd_event(VK_RETURN, 0, 0, 0)
+                    time.sleep(0.05)
+                    ctypes.windll.user32.keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.2)
+                    ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0)
+                    time.sleep(0.05)
+                    ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, 0)
+                except Exception as ke:
+                    LOGGER.warning("Could not simulate play keys in Spotify: %s", ke)
+            else:
+                # Bring Spotify window to foreground (best-effort, fast).
+                time.sleep(0.3)
+                if hwnds:
+                    try:
+                        hwnd = hwnds[0]
+                        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                        win32gui.SetForegroundWindow(hwnd)
+                        LOGGER.info("Brought Spotify window to foreground (hwnd=%d)", hwnd)
+                    except Exception as fe:
+                        LOGGER.debug("Could not bring Spotify window to foreground: %s", fe)
 
             return ToolResult(
                 True,
@@ -1077,29 +1119,51 @@ def spotify_uri_to_web_url(track_uri: str) -> str | None:
 
 
 def clean_song_query(query: str) -> str:
-    query = " ".join(query.strip().split())
+    cleaned = " ".join(query.strip().split())
 
+    # 1. Strip conversational lead-ins
+    lead_ins = [
+        r"^(?:hey\s+blinky\s*,?\s*)",
+        r"^(?:can\s+you\s+(?:please\s+)?)",
+        r"^(?:could\s+you\s+(?:please\s+)?)",
+        r"^(?:please\s+)",
+        r"^(?:i\s+want\s+to\s+)",
+        r"^(?:help\s+me\s+(?:to\s+)?)",
+    ]
+    for pattern in lead_ins:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+
+    # 2. Strip compound commands
+    cleaned = re.sub(
+        r"^(?:open|launch|start)\s+(?:spotify|youtube)\s+(?:and|to|then)\s+(?:play|playa|palay|put\s+on|stream|listen\s+to|find|search\s+for)\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # 3. Strip command verbs at start: open, launch, play, playa, palay, put on, stream, listen to, find, search for
+    command_verbs = [
+        r"^(?:play|playa|palay)\s+",
+        r"^(?:put\s+on\s+)",
+        r"^(?:stream\s+)",
+        r"^(?:listen\s+to\s+)",
+        r"^(?:find\s+)",
+        r"^(?:search\s+for\s+)",
+        r"^(?:open\s+)",
+        r"^(?:launch\s+)",
+    ]
+    for verb_pat in command_verbs:
+        cleaned = re.sub(verb_pat, "", cleaned, flags=re.IGNORECASE).strip()
+
+    # 4. Strip trailing platform phrases
+    cleaned = re.sub(r"\s+(?:on|in|using)\s+(?:spotify|youtube|you\s+tube)(?:\s+.*)?$", "", cleaned, flags=re.IGNORECASE).strip()
+
+    # 5. Strip articles and strip words from start and end
     strip_words = {
-        "any",
-        "latest",
-        "new",
-        "newest",
-        "some",
-        "a",
-        "the",
-        "recent",
-        "trending",
-        "popular",
-        "song",
-        "track",
-        "music",
-        "artist",
-        "singer",
-        "playlist",
-        "by",
+        "a", "an", "the", "some", "any", "latest", "new", "newest", "recent",
+        "trending", "popular", "song", "track", "music", "video", "artist", "singer", "playlist", "by"
     }
-
-    words = query.split()
+    words = cleaned.split()
     changed = True
     while changed and words:
         changed = False
@@ -1110,13 +1174,46 @@ def clean_song_query(query: str) -> str:
             words.pop()
             changed = True
 
-    cleaned = " ".join(words).strip()
-    return cleaned if cleaned else query
+    result = " ".join(words).strip()
+    return result if result else query.strip()
 
 
 async def resolve_spotify_track_uri(song_name: str) -> str | None:
-    # SearXNG disabled. Fast return None to trigger instant native spotify:search: URI.
+    try:
+        from ai.gemini_client import ask_gemini_text
+        query = f"site:open.spotify.com/track {clean_song_query(song_name)}"
+        res = ask_gemini_text(f"Find the Spotify track link for: {query}", web_search=True)
+        for source in res.get("sources", []):
+            url = source.get("url", "")
+            match = re.search(r"open\.spotify\.com/track/([a-zA-Z0-9]+)", url)
+            if match:
+                return f"spotify:track:{match.group(1)}"
+        text = res.get("text", "")
+        match = re.search(r"open\.spotify\.com/track/([a-zA-Z0-9]+)", text)
+        if match:
+            return f"spotify:track:{match.group(1)}"
+    except Exception as exc:
+        LOGGER.warning("resolve_spotify_track_uri via Gemini Grounding failed: %s", exc)
     return None
+
+
+def is_youtube_watch_history(query: str) -> tuple[bool, str]:
+    q = query.lower().strip()
+    history_patterns = [
+        r"last\s+(?P<topic>.*?)\s*video\s+(?:i(?:'?ve|\s+have)\s+been\s+watching|i\s+watched|watched)",
+        r"(?:my\s+)?watch\s+history(?:\s+(?:for|on|about)\s+(?P<topic2>.*))?",
+        r"previously\s+watched(?:\s+video(?:s)?)?(?:\s+(?:about|for|of)?\s*(?P<topic3>.*))?",
+        r"(?:resume|continue\s+watching)\s+(?:the\s+)?video(?:\s+(?:about|for|of)?\s*(?P<topic4>.*))?",
+        r"continue\s+watching(?:\s+(?:about|for|of)?\s*(?P<topic5>.*))?",
+    ]
+    for pat in history_patterns:
+        m = re.search(pat, q)
+        if m:
+            topic = m.groupdict().get("topic") or m.groupdict().get("topic2") or m.groupdict().get("topic3") or m.groupdict().get("topic4") or ""
+            topic = topic.strip()
+            topic = re.sub(r"^(?:the|a|an|some)\s+", "", topic).strip()
+            return True, topic
+    return False, ""
 
 
 def play_youtube_video_tool(video_query: str) -> ToolResult:
@@ -1124,13 +1221,30 @@ def play_youtube_video_tool(video_query: str) -> ToolResult:
     import webbrowser
 
     try:
-        url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(video_query.strip())}"
+        is_history, topic = is_youtube_watch_history(video_query)
+        if is_history:
+            if topic:
+                url = f"https://www.youtube.com/feed/history?query={urllib.parse.quote(topic)}"
+                message = f"Opened YouTube watch history for '{topic}'."
+            else:
+                url = "https://www.youtube.com/feed/history"
+                message = "Opened YouTube watch history."
+            webbrowser.open(url)
+            return ToolResult(
+                True,
+                "play_youtube",
+                message,
+                {"video_query": video_query, "topic": topic, "video_url": url, "history": True},
+            )
+
+        cleaned_query = clean_song_query(video_query)
+        url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(cleaned_query)}"
         webbrowser.open(url)
         return ToolResult(
             True,
             "play_youtube",
-            f"Playing '{video_query}' on YouTube.",
-            {"video_query": video_query, "video_url": url},
+            f"Playing '{cleaned_query}' on YouTube.",
+            {"video_query": cleaned_query, "video_url": url, "fallback_url": url},
         )
     except Exception as e:
         LOGGER.exception("Error in play_youtube_video_tool")
@@ -1466,42 +1580,8 @@ def spotify_uri_to_web_url(track_uri: str) -> str | None:
     return f"https://open.spotify.com/track/{match.group(1)}"
 
 
-def clean_song_query(query: str) -> str:
-    query = " ".join(query.strip().split())
-
-    strip_words = {
-        "any",
-        "latest",
-        "new",
-        "newest",
-        "some",
-        "a",
-        "the",
-        "recent",
-        "trending",
-        "popular",
-        "song",
-        "track",
-        "music",
-        "artist",
-        "singer",
-        "playlist",
-        "by",
-    }
-
-    words = query.split()
-    changed = True
-    while changed and words:
-        changed = False
-        if words[0].lower() in strip_words:
-            words.pop(0)
-            changed = True
-        elif words and words[-1].lower() in strip_words:
-            words.pop()
-            changed = True
-
-    cleaned = " ".join(words).strip()
-    return cleaned if cleaned else query
+def clean_song_query_legacy(query: str) -> str:
+    return clean_song_query(query)
 
 
 # ---------------------------------------------------------------------------
@@ -1589,6 +1669,8 @@ def _backend_error(action: str) -> ToolResult | None:
         return ToolResult(False, action, f"Computer-use backend unavailable: {exc}", {})
 
     if name == "native":
+        if IS_WINDOWS:
+            return None
         return ToolResult(
             False,
             action,
@@ -1771,6 +1853,41 @@ def _mouse_tool_via_backend(
 
         backend = get_backend()
         if backend is None:
+            if IS_WINDOWS:
+                import pywinauto.mouse
+                aliases = {
+                    "left_click": "click",
+                    "right_click": "right_click",
+                    "double_click": "double_click",
+                    "leftclick": "click",
+                    "rightclick": "right_click",
+                    "middle_click": "click",
+                }
+                resolved = aliases.get(action, action)
+                ix = int(x) if x is not None else 0
+                iy = int(y) if y is not None else 0
+                if resolved == "click":
+                    btn = "right" if button in ("right", "secondary") else ("middle" if button == "middle" else "left")
+                    if btn == "right":
+                        pywinauto.mouse.right_click(coords=(ix, iy))
+                    else:
+                        pywinauto.mouse.click(button=btn, coords=(ix, iy))
+                    return ToolResult(True, "mouse", f"Native {action} at ({ix}, {iy})", {"action": action, "x": ix, "y": iy, "button": btn, "backend": "native"})
+                elif resolved == "double_click":
+                    btn = "right" if button in ("right", "secondary") else "left"
+                    pywinauto.mouse.double_click(button=btn, coords=(ix, iy))
+                    return ToolResult(True, "mouse", f"Native {action} at ({ix}, {iy})", {"action": action, "x": ix, "y": iy, "button": btn, "backend": "native"})
+                elif resolved == "right_click":
+                    pywinauto.mouse.right_click(coords=(ix, iy))
+                    return ToolResult(True, "mouse", f"Native {action} at ({ix}, {iy})", {"action": action, "x": ix, "y": iy, "button": "right", "backend": "native"})
+                elif resolved == "move":
+                    pywinauto.mouse.move(coords=(ix, iy))
+                    return ToolResult(True, "mouse", f"Native {action} at ({ix}, {iy})", {"action": action, "x": ix, "y": iy, "backend": "native"})
+                elif resolved == "scroll":
+                    pywinauto.mouse.scroll(coords=(ix, iy), wheel_dist=int(scroll_amount))
+                    return ToolResult(True, "mouse", f"Native {action} at ({ix}, {iy})", {"action": action, "x": ix, "y": iy, "scroll_amount": int(scroll_amount), "backend": "native"})
+                else:
+                    return ToolResult(False, "mouse", f"Unsupported native mouse action: {action}", {})
             return ToolResult(False, "mouse", "No computer-use backend active.", {})
 
         aliases = {

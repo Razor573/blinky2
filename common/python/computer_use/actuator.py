@@ -145,6 +145,67 @@ def list_windows() -> list[dict[str, Any]]:
     linux = _linux_module()
     if linux is not None:
         return linux.list_windows()
+
+    if IS_WINDOWS:
+        try:
+            import win32gui
+            import win32process
+            import psutil
+
+            results: list[dict[str, Any]] = []
+
+            def _enum_win(hwnd: int, extra: list) -> bool:
+                try:
+                    if win32gui.IsWindowVisible(hwnd):
+                        title = win32gui.GetWindowText(hwnd).strip()
+                        if title:
+                            rect = win32gui.GetWindowRect(hwnd)
+                            x, y, r, b = rect
+                            w = r - x
+                            h = b - y
+                            if w > 0 and h > 0:
+                                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                                proc_name = ""
+                                try:
+                                    proc_name = psutil.Process(pid).name()
+                                except Exception:
+                                    pass
+                                extra.append({
+                                    "title": title,
+                                    "process": proc_name,
+                                    "app_id": proc_name,
+                                    "pid": pid,
+                                    "x": x,
+                                    "y": y,
+                                    "width": w,
+                                    "height": h,
+                                    "window_id": str(hwnd),
+                                    "bounds": {"x": x, "y": y, "width": w, "height": h},
+                                    "supported": True,
+                                    "focused": hwnd == win32gui.GetForegroundWindow(),
+                                    "hidden": False,
+                                })
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        import ctypes
+                        ctypes.windll.kernel32.SetLastError(0)
+                    except Exception:
+                        pass
+                return True
+
+            try:
+                win32gui.EnumWindows(_enum_win, results)
+            except Exception as exc:
+                if getattr(exc, "winerror", None) == 122 or (isinstance(getattr(exc, "args", None), (list, tuple)) and exc.args and exc.args[0] == 122):
+                    return results
+                raise
+            return results
+        except Exception as exc:
+            LOGGER.warning("Native EnumWindows failed: %s", exc)
+            return []
+
     return []
 
 
@@ -523,17 +584,37 @@ def type_text(text: str, target_app: str | None = None) -> dict[str, Any]:
             return linux.type_text(text, target_app=target_app)
         if IS_WINDOWS:
             try:
-                from utils.window import get_target_window_element
-                import ctypes
-                active = get_target_window_element()
-                if active and hasattr(active, "handle") and active.handle:
-                    ctypes.windll.user32.SetForegroundWindow(active.handle)
-                    import time; time.sleep(0.05)
+                if target_app:
+                    import win32gui
+                    import win32con
+                    import time
+                    hwnds: list[int] = []
+                    target_lower = target_app.strip().lower()
+                    def _find_target(h: int, extra: list) -> bool:
+                        if win32gui.IsWindowVisible(h):
+                            t = win32gui.GetWindowText(h).lower()
+                            if target_lower in t:
+                                extra.append(h)
+                        return True
+                    win32gui.EnumWindows(_find_target, hwnds)
+                    if hwnds:
+                        win32gui.ShowWindow(hwnds[0], win32con.SW_RESTORE)
+                        win32gui.SetForegroundWindow(hwnds[0])
+                        time.sleep(0.1)
+                else:
+                    from utils.window import get_target_window_element
+                    import ctypes
+                    active = get_target_window_element()
+                    if active and hasattr(active, "handle") and active.handle:
+                        ctypes.windll.user32.SetForegroundWindow(active.handle)
+                        import time
+                        time.sleep(0.05)
                 import pywinauto.keyboard
                 pywinauto.keyboard.send_keys(text, with_spaces=True)
                 return _ok_result("type_text", f"Typed '{text}' via native keyboard", text=text, target_app=target_app)
             except Exception as exc:
                 LOGGER.warning("Native keyboard type fallback failed: %s", exc)
+                return _fail_result("type_text", str(exc))
         return _no_backend("type_text")
 
     try:
@@ -554,6 +635,38 @@ def press_key(key: str, target_app: str | None = None) -> dict[str, Any]:
         linux = _linux_module()
         if linux is not None:
             return linux.press_key(key, target_app=target_app)
+        if IS_WINDOWS:
+            try:
+                if target_app:
+                    import win32gui
+                    import win32con
+                    import time
+                    hwnds: list[int] = []
+                    target_lower = target_app.strip().lower()
+                    def _find_target(h: int, extra: list) -> bool:
+                        if win32gui.IsWindowVisible(h):
+                            t = win32gui.GetWindowText(h).lower()
+                            if target_lower in t:
+                                extra.append(h)
+                        return True
+                    win32gui.EnumWindows(_find_target, hwnds)
+                    if hwnds:
+                        win32gui.ShowWindow(hwnds[0], win32con.SW_RESTORE)
+                        win32gui.SetForegroundWindow(hwnds[0])
+                        time.sleep(0.05)
+                from computer_use.tools import shortcut_tool
+                res = shortcut_tool(key)
+                if res.success:
+                    return _ok_result("press_key", res.message, key=key)
+            except Exception:
+                pass
+            try:
+                import pywinauto.keyboard
+                pywinauto.keyboard.send_keys(key)
+                return _ok_result("press_key", f"Pressed key '{key}' via pywinauto", key=key)
+            except Exception as exc:
+                LOGGER.warning("Native press_key fallback failed: %s", exc)
+                return _fail_result("press_key", str(exc))
         return _no_backend("press_key")
 
     backend_key = _MEDIA_KEY_MAP.get(key, key)

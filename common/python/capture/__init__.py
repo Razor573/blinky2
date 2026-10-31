@@ -32,6 +32,25 @@ class TimeoutError(CaptureError):
     pass
 
 
+BLACK_CHANNEL_MAX = 16
+BLACK_FRACTION_MIN = 0.995
+
+
+def is_black_frame(image: Image.Image) -> bool:
+    """Check if the frame is almost entirely black (channel <= 16 on >= 99.5% pixels)."""
+    try:
+        gray = image.convert("L")
+        hist = gray.histogram()
+        black_pixels = sum(hist[: BLACK_CHANNEL_MAX + 1])
+        total_pixels = sum(hist)
+        if total_pixels == 0:
+            return True
+        return (black_pixels / total_pixels) >= BLACK_FRACTION_MIN
+    except Exception as exc:
+        LOGGER.warning("is_black_frame check failed: %s", exc)
+        return False
+
+
 def capture_screen() -> Screenshot:
     captures_dir = Path("screenshots")
     captures_dir.mkdir(parents=True, exist_ok=True)
@@ -75,17 +94,16 @@ def capture_screen() -> Screenshot:
 
     screen_w, screen_h = image.width, image.height
 
-    if os.name != "nt" and not image.getbbox():
+    if is_black_frame(image):
         LOGGER.warning(
-            "Captured screen is completely black! This typically occurs on Linux under a Wayland session "
-            "because Wayland restricts background/third-party screen capture. "
-            "Action: Please log out, click the gear icon in the bottom-right corner of the login screen, "
-            "select 'GNOME on Xorg' (X11 session), and log back in to enable visual telemetry and screen capturing."
+            "Captured screen is nearly or completely black (channel <= %d on >= %.1f%% of pixels)!",
+            BLACK_CHANNEL_MAX,
+            BLACK_FRACTION_MIN * 100,
         )
 
-    image.thumbnail((1920, 1080), resample=resample_filter)
+    image.thumbnail((1568, 1568), resample=resample_filter)
     image = image.convert("RGB")
-    image.save(path, format="JPEG", quality=75, optimize=True)
+    image.save(path, format="JPEG", quality=85, optimize=True)
     LOGGER.info(
         "Saved optimized screenshot: %s (size: %dx%d, screen: %dx%d)",
         path,
