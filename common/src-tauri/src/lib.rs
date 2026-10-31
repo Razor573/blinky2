@@ -1537,8 +1537,9 @@ pub fn run() {
                 }
             }
 
-            // Register global push-to-talk voice recording shortcuts (Ctrl+Space and Win+Space)
+            // Register global push-to-talk voice recording shortcuts (Ctrl+Alt+Space, Ctrl+Space, and Win+Space)
             for (mods, name) in [
+                (Modifiers::CONTROL | Modifiers::ALT, "Ctrl+Alt+Space"),
                 (Modifiers::CONTROL, "Ctrl+Space"),
                 (Modifiers::SUPER, "Win+Space"),
             ] {

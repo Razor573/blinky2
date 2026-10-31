@@ -1633,6 +1633,18 @@ export function CommandBar() {
     };
   }, [isSpeaking, isRecording]);
 
+function looksLikeHallucination(raw: string): boolean {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return true;
+  if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u.test(trimmed)) return true;
+  const t = trimmed.replace(/[.,!?…]+$/g, '').trim().toLowerCase();
+  const artifacts = new Set([
+    'thank you', 'thank you very much', 'thank you for watching', 'thanks for watching',
+    'please subscribe', 'like and subscribe', 'bye-bye', 'bye bye', 'bye', 'you', 'okay'
+  ]);
+  return artifacts.has(t);
+}
+
   const handleAudioTranscription = async (blob: Blob) => {
     if (!blob || blob.size < 4000) {
       setStatus('Could not hear anything clearly. Please speak louder and try again.');
@@ -1761,7 +1773,8 @@ export function CommandBar() {
       }
     }
 
-    if (transcribedText) {
+    setIsTranscribing(false);
+    if (transcribedText && !looksLikeHallucination(transcribedText)) {
       setQuestion(transcribedText);
       setStatus('');
       void executeTutor(transcribedText, true);
@@ -2011,6 +2024,7 @@ export function CommandBar() {
             return;
           }
           const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+          setIsTranscribing(true);
           void handleAudioTranscription(audioBlob);
         }
       };
@@ -2496,6 +2510,11 @@ export function CommandBar() {
       .then((settings) => {
         setProvider(settings.provider);
         setShortcut(settings.shortcut);
+        if (settings.gemini_api_key) setGeminiApiKey(settings.gemini_api_key);
+        if (settings.openai_api_key) setOpenaiApiKey(settings.openai_api_key);
+        if (settings.anthropic_api_key) setAnthropicApiKey(settings.anthropic_api_key);
+        if (settings.vertex_project_id) setVertexProjectId(settings.vertex_project_id);
+        if (settings.assemblyai_api_key) setAssemblyaiApiKey(settings.assemblyai_api_key);
         setSarvamApiKey(settings.sarvam_api_key || '');
         setGroqApiKey(settings.groq_api_key || '');
         setDeepseekApiKey(settings.deepseek_api_key || '');
@@ -2518,10 +2537,12 @@ export function CommandBar() {
     };
   }, []);
 
-  // Global shortcut to toggle voice recording via Ctrl+Space / Win+Space
+  // Global shortcut to toggle voice recording via Ctrl+Alt / Ctrl+Space / Win+Space
   useEffect(() => {
     const handleVoiceShortcut = (event: KeyboardEvent) => {
-      if ((event.key === ' ' || event.code === 'Space') && (event.metaKey || event.ctrlKey)) {
+      const isCtrlAlt = (event.ctrlKey && event.altKey) || (event.ctrlKey && event.altKey && event.code === 'Space');
+      const isWinSpace = (event.key === ' ' || event.code === 'Space') && (event.metaKey || event.ctrlKey);
+      if (isCtrlAlt || isWinSpace) {
         event.preventDefault();
         if (!isRunning && !isTranscribing) {
           toggleRecording();
@@ -3653,16 +3674,16 @@ export function CommandBar() {
                 isRecording
                   ? assemblyaiApiKey || assemblyaiApiKeyRef.current
                     ? assemblyaiVoiceMode === 'agent'
-                      ? "⚡ AssemblyAI Voice Agent listening... (Win+Space)"
-                      : "🎙️ AssemblyAI Realtime STT listening... (Win+Space)"
-                    : "Listening... click mic to stop (Win+Space)"
+                      ? "⚡ AssemblyAI Voice Agent listening... (Ctrl+Alt)"
+                      : "🎙️ AssemblyAI Realtime STT listening... (Ctrl+Alt)"
+                    : "Listening... click mic to stop (Ctrl+Alt)"
                   : isTranscribing
                     ? "Transcribing voice with Universal-3 Pro..."
                     : isTaskCompleted
-                      ? "Finished! Ask anything... (Win+Space to speak)"
+                      ? "Finished! Ask anything... (Ctrl+Alt to speak)"
                       : assemblyaiApiKey || assemblyaiApiKeyRef.current
-                        ? `Ask anything or speak (Win+Space) • AssemblyAI ${assemblyaiVoiceMode === 'agent' ? 'Voice Agent' : 'Realtime STT'}`
-                        : "Ask anything... (Win+Space to speak)"
+                        ? `Ask anything or speak (Ctrl+Alt) • AssemblyAI ${assemblyaiVoiceMode === 'agent' ? 'Voice Agent' : 'Realtime STT'}`
+                        : "Ask anything... (Ctrl+Alt to speak)"
               }
               disabled={isTranscribing}
               autoFocus
@@ -3740,7 +3761,7 @@ export function CommandBar() {
                     toggleRecording();
                   }}
                   disabled={isRunning || isTranscribing}
-                  title={isRecording ? "Stop recording (Win+Space)" : "Record voice command (Win+Space)"}
+                  title={isRecording ? "Stop recording (Ctrl+Alt)" : "Record voice command (Ctrl+Alt)"}
                 >
                   {isTranscribing ? (
                     <Loader2 className="spin" size={16} />
@@ -3793,7 +3814,7 @@ export function CommandBar() {
                         {preprocessMarkdown(status)}
                       </ReactMarkdown>
                     </span>
-                    {!isRunning && status && status !== defaultStatus && (
+                    {isTaskCompleted && !isRunning && !isTranscribing && !isRecording && status && status !== defaultStatus && (
                       <div className="task-completion-indicator">
                         <span className="indicator-dot" />
                         <span>Finished • Ready for next request</span>

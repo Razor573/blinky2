@@ -856,7 +856,6 @@ def open_spotify_uri(track_uri: str, song_name: str | None = None) -> ToolResult
             os.startfile(track_uri)
 
             if track_uri.startswith("spotify:search:"):
-                # Wait 700ms, bring Spotify to foreground, and simulate VK_RETURN (0x0D) and VK_MEDIA_PLAY_PAUSE (0xB3)
                 time.sleep(0.7)
                 if not hwnds:
                     try:
@@ -875,15 +874,19 @@ def open_spotify_uri(track_uri: str, song_name: str | None = None) -> ToolResult
                 try:
                     import ctypes
                     VK_RETURN = 0x0D
-                    VK_MEDIA_PLAY_PAUSE = 0xB3
+                    VK_TAB = 0x09
                     KEYEVENTF_KEYUP = 0x0002
                     ctypes.windll.user32.keybd_event(VK_RETURN, 0, 0, 0)
                     time.sleep(0.05)
                     ctypes.windll.user32.keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0)
-                    time.sleep(0.2)
-                    ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0)
+                    time.sleep(0.35)
+                    ctypes.windll.user32.keybd_event(VK_TAB, 0, 0, 0)
                     time.sleep(0.05)
-                    ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, 0)
+                    ctypes.windll.user32.keybd_event(VK_TAB, 0, KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.05)
+                    ctypes.windll.user32.keybd_event(VK_RETURN, 0, 0, 0)
+                    time.sleep(0.05)
+                    ctypes.windll.user32.keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0)
                 except Exception as ke:
                     LOGGER.warning("Could not simulate play keys in Spotify: %s", ke)
             else:
@@ -1180,38 +1183,85 @@ def clean_song_query(query: str) -> str:
 
 async def resolve_spotify_track_uri(song_name: str) -> str | None:
     try:
+        import urllib.request, urllib.parse, json, ssl
         from ai.gemini_client import ask_gemini_text
-        query = f"site:open.spotify.com/track {clean_song_query(song_name)}"
-        res = ask_gemini_text(f"Find the Spotify track link for: {query}", web_search=True)
-        for source in res.get("sources", []):
-            url = source.get("url", "")
-            match = re.search(r"open\.spotify\.com/track/([a-zA-Z0-9]+)", url)
-            if match:
-                return f"spotify:track:{match.group(1)}"
-        text = res.get("text", "")
-        match = re.search(r"open\.spotify\.com/track/([a-zA-Z0-9]+)", text)
-        if match:
-            return f"spotify:track:{match.group(1)}"
+
+        prompt = (
+            f"What is the canonical artist name and exact song title for the music track requested by: '{song_name}'? "
+            "If the artist is not specified by the user, provide the most famous/popular original artist and song. "
+            "Output format: Artist - Title"
+        )
+        canon_res = ask_gemini_text(prompt)
+        canon_text = canon_res.get("text", "").strip().split("\n")[0].strip()
+        clean_target = canon_text if canon_text else clean_song_query(song_name)
+
+        link_res = ask_gemini_text(
+            f"Find the Spotify track link for: site:open.spotify.com/track {clean_target}",
+            web_search=True,
+        )
+        candidate_ids = []
+        for s in link_res.get("sources", []):
+            m = re.search(r"open\.spotify\.com/track/([a-zA-Z0-9]+)", s.get("url", ""))
+            if m:
+                candidate_ids.append(m.group(1))
+        m_text = re.search(r"open\.spotify\.com/track/([a-zA-Z0-9]+)", link_res.get("text", ""))
+        if m_text:
+            candidate_ids.append(m_text.group(1))
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        for tid in candidate_ids:
+            try:
+                req_url = f"https://open.spotify.com/oembed?url=https://open.spotify.com/track/{tid}"
+                req = urllib.request.Request(req_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, context=ctx, timeout=4) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read().decode())
+                        o_title = data.get("title", "").lower()
+                        o_author = data.get("author_name", "").lower()
+                        target_lower = clean_target.lower()
+                        if any(w in target_lower for w in o_title.split() if len(w) > 2) or any(
+                            w in target_lower for w in o_author.split() if len(w) > 2
+                        ):
+                            return f"spotify:track:{tid}"
+            except Exception:
+                continue
     except Exception as exc:
-        LOGGER.warning("resolve_spotify_track_uri via Gemini Grounding failed: %s", exc)
+        LOGGER.warning("resolve_spotify_track_uri failed: %s", exc)
     return None
 
 
 def is_youtube_watch_history(query: str) -> tuple[bool, str]:
-    q = query.lower().strip()
+    q = " " + query.lower().strip() + " "
+    typo_map = {
+        r"\bwathing\b": "watching",
+        r"\bwatchin\b": "watching",
+        r"\bwathcing\b": "watching",
+        r"\bwtaching\b": "watching",
+        r"\bi\s+been\b": "i have been",
+        r"\bive\s+been\b": "i have been",
+        r"\bi\s+was\b": "i have been",
+    }
+    for pat, rep in typo_map.items():
+        q = re.sub(pat, rep, q)
+    q = " ".join(q.split())
+
     history_patterns = [
-        r"last\s+(?P<topic>.*?)\s*video\s+(?:i(?:'?ve|\s+have)\s+been\s+watching|i\s+watched|watched)",
+        r"(?:last|latest|recent|previous|past)\s+(?P<topic>.*?)\s*(?:video|stream|gameplay|clip|vid)?\s+(?:i(?:'?ve|\s+have)\s+been\s+watching|i\s+watched|watched)",
         r"(?:my\s+)?watch\s+history(?:\s+(?:for|on|about)\s+(?P<topic2>.*))?",
-        r"previously\s+watched(?:\s+video(?:s)?)?(?:\s+(?:about|for|of)?\s*(?P<topic3>.*))?",
-        r"(?:resume|continue\s+watching)\s+(?:the\s+)?video(?:\s+(?:about|for|of)?\s*(?P<topic4>.*))?",
+        r"previously\s+watched(?:\s+(?:video|stream|clip|vid)s?)?(?:\s+(?:about|for|of)?\s*(?P<topic3>.*))?",
+        r"(?:resume|continue\s+watching)\s+(?:the\s+)?(?:video|stream|clip|vid)?(?:\s+(?:about|for|of)?\s*(?P<topic4>.*))?",
         r"continue\s+watching(?:\s+(?:about|for|of)?\s*(?P<topic5>.*))?",
     ]
     for pat in history_patterns:
         m = re.search(pat, q)
         if m:
-            topic = m.groupdict().get("topic") or m.groupdict().get("topic2") or m.groupdict().get("topic3") or m.groupdict().get("topic4") or ""
+            topic = m.groupdict().get("topic") or m.groupdict().get("topic2") or m.groupdict().get("topic3") or m.groupdict().get("topic4") or m.groupdict().get("topic5") or ""
             topic = topic.strip()
-            topic = re.sub(r"^(?:the|a|an|some)\s+", "", topic).strip()
+            topic = re.sub(r"\b(on|in)\s+youtube\b", "", topic, flags=re.IGNORECASE).strip()
+            topic = re.sub(r"\b(videos?|stream|gameplay|clip|vid|watching|the|a|my)\b", "", topic, flags=re.IGNORECASE).strip()
             return True, topic
     return False, ""
 
@@ -1292,296 +1342,6 @@ async def resolve_youtube_video_url(video_query: str) -> str | None:
     return None
 
 
-def open_spotify_uri(track_uri: str, song_name: str | None = None) -> ToolResult:
-    if os.name == "nt":
-        try:
-            import time
-            import win32gui
-            import win32con
-
-            _emit_tool_status("Opening Spotify track...")
-
-            # Detect if Spotify is currently playing by checking the window title.
-            # When paused, the title is typically "Spotify", "Spotify Premium", etc.
-            # When playing, the title is "Artist - Song".
-            is_playing = False
-            import win32process
-            import psutil
-
-            spotify_pids = set()
-            try:
-                for proc in psutil.process_iter(['pid', 'name']):
-                    if proc.info['name'] and proc.info['name'].lower() == "spotify.exe":
-                        spotify_pids.add(proc.info['pid'])
-            except Exception:
-                pass
-
-            hwnds: list[int] = []
-            def _find_spotify(h: int, extra: list) -> bool:
-                if win32gui.IsWindowVisible(h):
-                    try:
-                        _, pid = win32process.GetWindowThreadProcessId(h)
-                        if pid in spotify_pids:
-                            if win32gui.GetWindowText(h).strip():
-                                extra.append(h)
-                    except Exception:
-                        pass
-                return True
-
-            try:
-                win32gui.EnumWindows(_find_spotify, hwnds)
-            except Exception as e:
-                LOGGER.warning("Could not enumerate windows: %s", e)
-            if hwnds:
-                spotify_hwnd = hwnds[0]
-                title_text = win32gui.GetWindowText(spotify_hwnd).lower().strip()
-                if title_text and title_text not in ("spotify", "spotify premium", "spotify free", "spotify player"):
-                    is_playing = True
-                    LOGGER.info("Spotify is actively playing a song (title='%s'). Pausing first...", title_text)
-
-            # Only pause if a song is actively playing.
-            # This prevents toggling pause to play if Spotify was already paused.
-            if is_playing:
-                shortcut_tool("media_play_pause")
-                time.sleep(0.05)  # 50ms — let Spotify register the pause
-
-            # On Windows, os.startfile with a spotify:track: URI triggers the
-            # Spotify protocol handler which immediately starts playback.
-            os.startfile(track_uri)
-
-            # Bring Spotify window to foreground (best-effort, fast).
-            time.sleep(0.3)
-            if hwnds:
-                try:
-                    hwnd = hwnds[0]
-                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                    win32gui.SetForegroundWindow(hwnd)
-                    LOGGER.info("Brought Spotify window to foreground (hwnd=%d)", hwnd)
-                except Exception as fe:
-                    LOGGER.debug("Could not bring Spotify window to foreground: %s", fe)
-
-            return ToolResult(
-                True,
-                "open_spotify_uri",
-                "Opened Spotify URI. Playback started via URI handler.",
-                {"method": "os.startfile"},
-            )
-        except Exception as exc:
-            return ToolResult(
-                False,
-                "open_spotify_uri",
-                str(exc),
-                {"method": "os.startfile", "error": str(exc)},
-            )
-
-
-
-
-    if platform.system() == "Linux":
-        linux_result = open_spotify_uri_linux(track_uri)
-        if linux_result.success:
-            return linux_result
-        web_url = spotify_uri_to_web_url(track_uri)
-        if web_url and webbrowser.open(web_url):
-            return ToolResult(
-                True,
-                "open_spotify_uri",
-                "Opened Spotify track in the browser because the desktop URI handler was unavailable.",
-                {
-                    "method": "spotify_web_fallback",
-                    "url": web_url,
-                    "linux_error": linux_result.message,
-                },
-            )
-        return linux_result
-
-    web_url = spotify_uri_to_web_url(track_uri)
-    if web_url and webbrowser.open(web_url):
-        return ToolResult(
-            True,
-            "open_spotify_uri",
-            "Opened Spotify track in the browser.",
-            {"method": "webbrowser", "url": web_url},
-        )
-    return ToolResult(
-        False,
-        "open_spotify_uri",
-        "No supported Spotify URI opener found for this OS.",
-        {"track_uri": track_uri},
-    )
-
-
-def seek_spotify_tool(seconds: int, forward: bool) -> ToolResult:
-    if os.name != "nt":
-        return ToolResult(
-            False,
-            "seek_spotify",
-            "Seeking is currently supported on Windows only.",
-            {"seconds": seconds, "forward": forward},
-        )
-
-    try:
-        import win32gui
-        import win32con
-        import time
-        from pywinauto.keyboard import send_keys
-
-        # Find Spotify window by process name (spotify.exe)
-        import win32process
-        import psutil
-
-        spotify_pids = set()
-        try:
-            for proc in psutil.process_iter(['pid', 'name']):
-                if proc.info['name'] and proc.info['name'].lower() == "spotify.exe":
-                    spotify_pids.add(proc.info['pid'])
-        except Exception:
-            pass
-
-        hwnds = []
-        def _find_spotify(h: int, extra: list) -> bool:
-            if win32gui.IsWindowVisible(h):
-                try:
-                    # Only match windows owned by spotify.exe process
-                    _, pid = win32process.GetWindowThreadProcessId(h)
-                    if pid in spotify_pids:
-                        # Require a non-empty window title to isolate the main window
-                        if win32gui.GetWindowText(h).strip():
-                            extra.append(h)
-                except Exception:
-                    pass
-            return True
-
-        try:
-            win32gui.EnumWindows(_find_spotify, hwnds)
-        except Exception as e:
-            LOGGER.warning("Could not enumerate windows: %s", e)
-        if not hwnds:
-            return ToolResult(
-                False,
-                "seek_spotify",
-                "Spotify window not found. Make sure Spotify is open.",
-                {"seconds": seconds, "forward": forward},
-            )
-
-        spotify_hwnd = hwnds[0]
-        prev_hwnd = win32gui.GetForegroundWindow()
-
-        # Bring Spotify to foreground
-        win32gui.ShowWindow(spotify_hwnd, win32con.SW_RESTORE)
-        win32gui.SetForegroundWindow(spotify_hwnd)
-        time.sleep(0.1)  # small pause to ensure focus is registered
-
-        # Calculate number of keypresses (each shift+right/left is 5 seconds)
-        presses = max(1, int(round(seconds / 5.0)))
-        key_str = "+{RIGHT}" if forward else "+{LEFT}"
-
-        _emit_tool_status(f"Seeking {'forward' if forward else 'backward'} by {seconds} seconds...")
-
-        for _ in range(presses):
-            send_keys(key_str)
-            time.sleep(0.05)
-
-        # Restore previous focused window
-        if prev_hwnd and prev_hwnd != spotify_hwnd:
-            try:
-                win32gui.SetForegroundWindow(prev_hwnd)
-            except Exception:
-                pass
-
-        direction = "forward" if forward else "backward"
-        return ToolResult(
-            True,
-            "seek_spotify",
-            f"Sought {direction} by {seconds} seconds in Spotify.",
-            {"seconds": seconds, "forward": forward, "presses": presses},
-        )
-    except Exception as e:
-        LOGGER.exception("Error in seek_spotify_tool")
-        return ToolResult(
-            False,
-            "seek_spotify",
-            f"Failed to seek: {str(e)}",
-            {"seconds": seconds, "forward": forward},
-        )
-
-
-
-def open_spotify_uri_linux(track_uri: str) -> ToolResult:
-    opener_commands = [
-        ["xdg-open", track_uri],
-        ["gio", "open", track_uri],
-        ["kde-open5", track_uri],
-        ["kde-open", track_uri],
-    ]
-    errors: list[str] = []
-    for cmd in opener_commands:
-        if not shutil.which(cmd[0]):
-            continue
-        try:
-            completed = subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=10,
-            )
-            if completed.returncode == 0:
-                return ToolResult(
-                    True,
-                    "open_spotify_uri",
-                    "Opened Spotify URI.",
-                    {"method": cmd[0], "track_uri": track_uri},
-                )
-            errors.append(
-                f"{cmd[0]} exited {completed.returncode}: {(completed.stderr or '').strip()}"
-            )
-        except Exception as exc:
-            errors.append(f"{cmd[0]} failed: {exc}")
-
-    app_commands = [
-        ["spotify", f"--uri={track_uri}"],
-        ["flatpak", "run", "com.spotify.Client", f"--uri={track_uri}"],
-        ["snap", "run", "spotify", track_uri],
-    ]
-    for cmd in app_commands:
-        if not shutil.which(cmd[0]):
-            continue
-        try:
-            subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            return ToolResult(
-                True,
-                "open_spotify_uri",
-                "Launched Spotify with URI.",
-                {"method": " ".join(cmd[:3]), "track_uri": track_uri},
-            )
-        except Exception as exc:
-            errors.append(f"{' '.join(cmd[:3])} failed: {exc}")
-
-    message = (
-        "; ".join(errors)
-        if errors
-        else "No Linux Spotify opener command was available."
-    )
-    return ToolResult(
-        False, "open_spotify_uri", message, {"track_uri": track_uri, "errors": errors}
-    )
-
-
-def spotify_uri_to_web_url(track_uri: str) -> str | None:
-    match = re.fullmatch(r"spotify:track:([a-zA-Z0-9]+)", track_uri.strip())
-    if not match:
-        return None
-    return f"https://open.spotify.com/track/{match.group(1)}"
-
-
-def clean_song_query_legacy(query: str) -> str:
-    return clean_song_query(query)
 
 
 # ---------------------------------------------------------------------------

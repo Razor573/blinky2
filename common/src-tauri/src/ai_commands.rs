@@ -1422,25 +1422,29 @@ pub async fn transcribe_audio_native(
             }
         };
 
+        let effective_fallback = fallback_model
+            .filter(|m| !m.trim().is_empty() && m.as_str() != "none")
+            .unwrap_or_else(|| "gemini-2.5-flash".to_string());
+
         match call_gemini(&model).await {
             Ok(text) if !text.is_empty() => Ok(text),
             Ok(_) => {
-                if let Some(ref fb) = fallback_model.filter(|m| !m.trim().is_empty() && m.as_str() != "none") {
-                    call_gemini(fb).await
+                if model != effective_fallback {
+                    call_gemini(&effective_fallback).await
                 } else {
                     Ok(String::new())
                 }
             }
             Err(e) if e == "429_RATE_LIMIT" => {
-                if let Some(ref fb) = fallback_model.filter(|m| !m.trim().is_empty() && m.as_str() != "none") {
-                    call_gemini(fb).await
+                if model != effective_fallback {
+                    call_gemini(&effective_fallback).await
                 } else {
                     Err("Gemini STT quota limit reached (429)".to_string())
                 }
             }
             Err(e) => {
-                if let Some(ref fb) = fallback_model.filter(|m| !m.trim().is_empty() && m.as_str() != "none") {
-                    call_gemini(fb).await
+                if model != effective_fallback {
+                    call_gemini(&effective_fallback).await
                 } else {
                     Err(e)
                 }
